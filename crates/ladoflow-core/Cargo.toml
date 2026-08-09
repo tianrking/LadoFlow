@@ -1,24 +1,15 @@
 [package]
 name = "ladoflow-core"
 description = "Shared session, negotiation, telemetry, and quality policy for LadoFlow"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-license = "MIT"
-repository = "https://github.com/tianrking/LadoFlow"
-authors = ["LadoFlow contributors"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
 ladoflow-protocol = { path = "../ladoflow-protocol" }
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
-
-# This crate is intentionally self-contained until the repository workspace
-# opts it in. Keeping the boundary here lets it be checked without changing
-# the root manifest.
-[workspace]
+[lints]
+workspace = true

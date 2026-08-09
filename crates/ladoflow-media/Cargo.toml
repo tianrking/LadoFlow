@@ -1,21 +1,13 @@
 [package]
 name = "ladoflow-media"
 description = "Codec-neutral media metadata and deterministic frame scheduling for LadoFlow"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-license = "MIT"
-repository = "https://github.com/tianrking/LadoFlow"
-authors = ["LadoFlow contributors"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 publish = false
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
-
-# Keep this crate directly testable until the repository workspace manifest is
-# updated by its owner.
-[workspace]
+[lints]
+workspace = true

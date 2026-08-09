@@ -1,21 +1,12 @@
 [package]
 name = "ladoflow-transport"
 description = "Transport-neutral bounded channels and deterministic loopback transport for LadoFlow"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-license = "MIT"
-repository = "https://github.com/tianrking/LadoFlow"
-authors = ["LadoFlow contributors"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
-
-# Keep direct manifest builds isolated so this crate remains independently
-# testable without requiring repository-root manifest changes.
-[workspace]
-resolver = "2"
+[lints]
+workspace = true
