@@ -54,3 +54,12 @@ Build an ad-hoc local macOS application bundle with:
 ```bash
 pnpm --filter @ladoflow/desktop tauri build --bundles app
 ```
+
+Build an unsigned Windows NSIS installer with:
+
+```powershell
+pnpm --filter @ladoflow/desktop tauri build --bundles nsis
+```
+
+CI uploads that unsigned installer as a short-lived workflow artifact. Code
+signing remains a release gate; an unsigned CI artifact is not a public release.
