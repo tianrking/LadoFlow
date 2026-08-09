@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../../../platform/windows/idd/dist/Release/x64/LadoFlowVirtualDisplay.exe": "windows/LadoFlowVirtualDisplay.exe",
+      "../../../platform/windows/idd/dist/Release/x64/LadoFlowDisplayService.exe": "windows/LadoFlowDisplayService.exe",
+      "../../../platform/windows/idd/dist/Release/x64/driver": "windows/driver"
+    }
+  }
+}

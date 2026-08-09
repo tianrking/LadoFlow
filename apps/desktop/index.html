@@ -198,6 +198,20 @@
             </button>
             <p id="capture-probe-result" class="capture-probe-result" aria-live="polite" hidden></p>
 
+            <div id="virtual-display-readiness" class="usb-readiness" hidden>
+              <p class="eyebrow">WINDOWS EXTENDED DISPLAY</p>
+              <p id="virtual-display-status" class="platform-copy">
+                Checking the LadoFlow virtual monitor service.
+              </p>
+              <button id="enable-virtual-display" class="button button--secondary" type="button">
+                Enable extended display
+              </button>
+              <button id="disable-virtual-display" class="button button--ghost" type="button" hidden>
+                Disable extended display
+              </button>
+              <p id="virtual-display-result" class="capture-probe-result" aria-live="polite" hidden></p>
+            </div>
+
             <div class="usb-readiness">
               <p class="eyebrow">ANDROID USB</p>
               <p id="usb-status" class="platform-copy">

@@ -17,6 +17,30 @@ interface DisplaySource {
   width: number;
   height: number;
   primary: boolean;
+  virtualDisplay: boolean;
+}
+
+type VirtualDisplayState =
+  | "unsupported"
+  | "clientMissing"
+  | "notInstalled"
+  | "serviceStopped"
+  | "ready"
+  | "enabling"
+  | "enabled"
+  | "disabling"
+  | "failed"
+  | "stopping";
+
+interface VirtualDisplayStatus {
+  state: VirtualDisplayState;
+  detail: string;
+  serviceInstalled: boolean;
+  serviceState: string;
+  enabled: boolean;
+  deviceInstanceId: string | null;
+  lastError: string | null;
+  generation: number;
 }
 
 interface HostSnapshot {
@@ -50,7 +74,7 @@ interface HostSnapshot {
     usbLinkState: "unsupported" | "ready" | "connecting" | "connected" | "failed";
     usbStatus: string;
     capturePermission: CapturePermission;
-    virtualDisplayStatus: string;
+    virtualDisplay: VirtualDisplayStatus;
     displays: DisplaySource[];
   };
 }
@@ -96,6 +120,13 @@ interface UsbAccessoryProbeReport {
   maxPacketSize: number | null;
 }
 
+interface VirtualDisplayActionReport {
+  passed: boolean;
+  status: VirtualDisplayStatus;
+  selectedDisplayId: string | null;
+  elapsedMs: number;
+}
+
 const elements = {
   appVersion: getElement("app-version"),
   hostPlatform: getElement("host-platform"),
@@ -114,6 +145,11 @@ const elements = {
   requestPermission: getButton("request-permission"),
   runCaptureProbe: getButton("run-capture-probe"),
   captureProbeResult: getElement("capture-probe-result"),
+  virtualDisplayReadiness: getElement("virtual-display-readiness"),
+  virtualDisplayStatus: getElement("virtual-display-status"),
+  enableVirtualDisplay: getButton("enable-virtual-display"),
+  disableVirtualDisplay: getButton("disable-virtual-display"),
+  virtualDisplayResult: getElement("virtual-display-result"),
   prepareAndroidUsb: getButton("prepare-android-usb"),
   disconnectAndroidUsb: getButton("disconnect-android-usb"),
   usbStatus: getElement("usb-status"),
@@ -134,6 +170,7 @@ let selectedFps = 60;
 let selectedDisplayId: string | null = null;
 let pollingHandle: number | undefined;
 let busy = false;
+let lastSnapshot: HostSnapshot | null = null;
 
 function getElement(id: string): HTMLElement {
   const element = document.getElementById(id);
@@ -245,7 +282,10 @@ function renderDisplays(displays: DisplaySource[], disabled: boolean) {
 
   if (!displays.some((display) => display.id === selectedDisplayId)) {
     selectedDisplayId =
-      displays.find((display) => display.primary)?.id ?? displays[0]?.id ?? null;
+      displays.find((display) => display.virtualDisplay)?.id ??
+      displays.find((display) => display.primary)?.id ??
+      displays[0]?.id ??
+      null;
   }
 
   for (const display of displays) {
@@ -253,6 +293,7 @@ function renderDisplays(displays: DisplaySource[], disabled: boolean) {
     const selected = display.id === selectedDisplayId;
     row.type = "button";
     row.className = selected ? "display-row display-row--selected" : "display-row";
+    row.classList.toggle("display-row--virtual", display.virtualDisplay);
     row.disabled = disabled;
     row.setAttribute("aria-pressed", String(selected));
     row.setAttribute("aria-label", `Use ${display.name} as the capture source`);
@@ -270,7 +311,11 @@ function renderDisplays(displays: DisplaySource[], disabled: boolean) {
     const name = document.createElement("strong");
     name.textContent = display.name;
     const resolution = document.createElement("small");
-    resolution.textContent = `${display.width} × ${display.height}${display.primary ? " · Main" : ""}`;
+    const labels = [
+      display.virtualDisplay ? "LadoFlow extended" : null,
+      display.primary ? "Main" : null,
+    ].filter((label): label is string => label !== null);
+    resolution.textContent = `${display.width} × ${display.height}${labels.length > 0 ? ` · ${labels.join(" · ")}` : ""}`;
     details.append(name, resolution);
 
     row.append(glyph, details);
@@ -279,6 +324,7 @@ function renderDisplays(displays: DisplaySource[], disabled: boolean) {
 }
 
 function render(snapshot: HostSnapshot) {
+  lastSnapshot = snapshot;
   const usbConnected = snapshot.platform.usbLinkState === "connected";
   const isUsbSession = snapshot.session.transport.includes("Android Open Accessory");
   const presentation = sessionPresentation(snapshot.session.phase, isUsbSession);
@@ -323,7 +369,23 @@ function render(snapshot: HostSnapshot) {
     permissionGranted ? "Allowed" : permissionUnsupported ? "N/A" : "Permission needed",
     permissionGranted ? "good" : permissionUnsupported ? "idle" : "warn",
   );
-  elements.captureBackend.textContent = `${snapshot.platform.captureBackend}. ${snapshot.platform.encoderStatus}. ${snapshot.platform.virtualDisplayStatus}`;
+  elements.captureBackend.textContent = `${snapshot.platform.captureBackend}. ${snapshot.platform.encoderStatus}.`;
+  const virtualDisplay = snapshot.platform.virtualDisplay;
+  elements.virtualDisplayReadiness.hidden = snapshot.os !== "windows";
+  elements.virtualDisplayStatus.textContent = virtualDisplay.detail;
+  elements.enableVirtualDisplay.hidden = virtualDisplay.enabled;
+  elements.disableVirtualDisplay.hidden = !virtualDisplay.enabled;
+  const virtualDisplayUnavailable =
+    virtualDisplay.state === "unsupported" ||
+    virtualDisplay.state === "clientMissing" ||
+    virtualDisplay.state === "notInstalled";
+  const virtualDisplayTransitioning =
+    virtualDisplay.state === "enabling" ||
+    virtualDisplay.state === "disabling" ||
+    virtualDisplay.state === "stopping";
+  elements.enableVirtualDisplay.disabled =
+    busy || isRunning || virtualDisplayUnavailable || virtualDisplayTransitioning;
+  elements.disableVirtualDisplay.disabled = busy || isRunning || virtualDisplayTransitioning;
   elements.usbStatus.textContent = snapshot.platform.usbStatus;
   elements.requestPermission.hidden = permissionGranted || permissionUnsupported;
   elements.requestPermission.disabled = busy;
@@ -378,6 +440,8 @@ async function runAction(action: () => Promise<HostSnapshot>) {
   elements.stop.disabled = true;
   elements.requestPermission.disabled = true;
   elements.runCaptureProbe.disabled = true;
+  elements.enableVirtualDisplay.disabled = true;
+  elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
   elements.disconnectAndroidUsb.disabled = true;
   clearError();
@@ -410,6 +474,8 @@ async function runCaptureProbe() {
   busy = true;
   const idleLabel = elements.runCaptureProbe.textContent;
   elements.runCaptureProbe.disabled = true;
+  elements.enableVirtualDisplay.disabled = true;
+  elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
   elements.disconnectAndroidUsb.disabled = true;
   elements.runCaptureProbe.textContent = "Capturing for 0.75 s…";
@@ -461,6 +527,49 @@ function hexWord(value: number): string {
   return value.toString(16).padStart(4, "0");
 }
 
+function renderVirtualDisplayAction(report: VirtualDisplayActionReport) {
+  elements.virtualDisplayResult.hidden = false;
+  elements.virtualDisplayResult.className = report.passed
+    ? "capture-probe-result capture-probe-result--good"
+    : "capture-probe-result capture-probe-result--warn";
+  elements.virtualDisplayResult.textContent = `${report.status.detail} Completed in ${report.elapsedMs} ms.`;
+  if (report.selectedDisplayId !== null) {
+    selectedDisplayId = report.selectedDisplayId;
+    elements.captureProbeResult.hidden = true;
+  }
+}
+
+async function changeVirtualDisplay(enable: boolean): Promise<VirtualDisplayActionReport | null> {
+  if (busy) return null;
+  busy = true;
+  const button = enable ? elements.enableVirtualDisplay : elements.disableVirtualDisplay;
+  const idleLabel = button.textContent;
+  button.textContent = enable ? "Creating extended display…" : "Removing extended display…";
+  elements.enableVirtualDisplay.disabled = true;
+  elements.disableVirtualDisplay.disabled = true;
+  elements.prepareAndroidUsb.disabled = true;
+  elements.disconnectAndroidUsb.disabled = true;
+  elements.runCaptureProbe.disabled = true;
+  elements.start.disabled = true;
+  elements.stop.disabled = true;
+  clearError();
+
+  try {
+    const report = await invoke<VirtualDisplayActionReport>(
+      enable ? "enable_virtual_display" : "disable_virtual_display",
+    );
+    renderVirtualDisplayAction(report);
+    return report;
+  } catch (error) {
+    showError(error);
+    return null;
+  } finally {
+    busy = false;
+    button.textContent = idleLabel;
+    await refreshSnapshot(false);
+  }
+}
+
 async function prepareAndroidUsb() {
   if (busy) return;
   busy = true;
@@ -471,11 +580,19 @@ async function prepareAndroidUsb() {
   elements.start.disabled = true;
   elements.stop.disabled = true;
   elements.runCaptureProbe.disabled = true;
+  elements.enableVirtualDisplay.disabled = true;
+  elements.disableVirtualDisplay.disabled = true;
   clearError();
+  let enableExtendedDisplay = false;
 
   try {
     const report = await invoke<UsbAccessoryProbeReport>("prepare_android_usb");
     renderUsbProbe(report);
+    enableExtendedDisplay =
+      report.passed === true &&
+      lastSnapshot?.os === "windows" &&
+      lastSnapshot.platform.virtualDisplay.serviceInstalled &&
+      !lastSnapshot.platform.virtualDisplay.enabled;
   } catch (error) {
     showError(error);
   } finally {
@@ -483,15 +600,30 @@ async function prepareAndroidUsb() {
     elements.prepareAndroidUsb.textContent = idleLabel;
     await refreshSnapshot(false);
   }
+  if (enableExtendedDisplay) {
+    await changeVirtualDisplay(true);
+  }
 }
 
-elements.start.addEventListener("click", () => {
-  void runAction(() =>
+async function startSession() {
+  if (busy) return;
+  const shouldEnableVirtualDisplay =
+    lastSnapshot?.platform.usbLinkState === "connected" &&
+    lastSnapshot.platform.virtualDisplay.serviceInstalled &&
+    !lastSnapshot.platform.virtualDisplay.enabled;
+  if (shouldEnableVirtualDisplay) {
+    await changeVirtualDisplay(true);
+  }
+  await runAction(() =>
     invoke<HostSnapshot>("start_loopback", {
       config: selectedConfig(),
       displayId: selectedDisplayId,
     }),
   );
+}
+
+elements.start.addEventListener("click", () => {
+  void startSession();
 });
 
 elements.stop.addEventListener("click", () => {
@@ -505,6 +637,8 @@ elements.requestPermission.addEventListener("click", () => {
 });
 
 elements.runCaptureProbe.addEventListener("click", () => void runCaptureProbe());
+elements.enableVirtualDisplay.addEventListener("click", () => void changeVirtualDisplay(true));
+elements.disableVirtualDisplay.addEventListener("click", () => void changeVirtualDisplay(false));
 elements.prepareAndroidUsb.addEventListener("click", () => void prepareAndroidUsb());
 elements.disconnectAndroidUsb.addEventListener("click", () => {
   void runAction(() => invoke<HostSnapshot>("disconnect_android_usb"));

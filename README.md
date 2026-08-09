@@ -48,7 +48,7 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 | Shared runtime | Negotiation, sessions, reconnect policy, telemetry, pacing, and bounded loopback implemented | Platform-neutral runtime used by every host and display |
 | Desktop host | Runnable Tauri 2 loopback and diagnostics UI | One shell with target-gated native services |
 | macOS host | Permission/display discovery plus a real ScreenCaptureKit IOSurface probe and local app bundle | Long-running capture/VideoToolbox pipeline, native virtual-display adapter, and notarized host |
-| Windows host | Physical-hardware-verified capture/GPU H.264/input plus a build-verified one-monitor IddCx driver, LocalSystem lifecycle service, and bounded IPC client | Trusted driver installation, automatic virtual-monitor selection, clean-machine recovery tests, and production signing |
+| Windows host | Physical-hardware-verified capture/GPU H.264/input plus a build-verified one-monitor IddCx driver, LocalSystem lifecycle service, bounded IPC client, and automatic Tauri virtual-monitor selection | Trusted driver installation, clean-machine recovery tests, and production signing |
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
 | Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
 | iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
@@ -131,7 +131,11 @@ physically verified on the Windows host. The separate IddCx source now builds,
 passes Universal API/INF validation, produces a development catalog, and has a
 LocalSystem owner plus PID-verified JSON IPC client; this machine still runs in
 existing-monitor mirror mode until the driver and service are installed on a
-controlled test host. Windows-to-Android
+controlled test host. The Windows Tauri shell now exposes structured service and
+monitor state, enables or disables the virtual display through that client, and
+automatically selects the resulting virtual monitor. Its unsigned NSIS artifact
+contains the driver, service, and controller resources, but the current package
+does not register them with Windows. Windows-to-Android
 USB has not yet been verified on a physical device. See
 [development setup](./docs/development.md) and the
 [platform handoff](./docs/platform-handoff.md).

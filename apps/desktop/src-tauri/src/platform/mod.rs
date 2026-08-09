@@ -23,6 +23,61 @@ pub struct DisplaySource {
     pub width: u64,
     pub height: u64,
     pub primary: bool,
+    pub virtual_display: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VirtualDisplayState {
+    Unsupported,
+    ClientMissing,
+    NotInstalled,
+    ServiceStopped,
+    Ready,
+    Enabling,
+    Enabled,
+    Disabling,
+    Failed,
+    Stopping,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VirtualDisplayStatus {
+    pub state: VirtualDisplayState,
+    pub detail: String,
+    pub service_installed: bool,
+    pub service_state: String,
+    pub enabled: bool,
+    pub device_instance_id: Option<String>,
+    pub last_error: Option<String>,
+    pub generation: u64,
+}
+
+#[cfg(not(target_os = "windows"))]
+impl VirtualDisplayStatus {
+    pub(crate) fn unsupported(detail: String) -> Self {
+        Self {
+            state: VirtualDisplayState::Unsupported,
+            detail,
+            service_installed: false,
+            service_state: "unsupported".to_owned(),
+            enabled: false,
+            device_instance_id: None,
+            last_error: None,
+            generation: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VirtualDisplayActionReport {
+    pub passed: bool,
+    pub status: VirtualDisplayStatus,
+    pub selected_display_id: Option<String>,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -56,7 +111,7 @@ pub struct PlatformStatus {
     pub usb_link_state: UsbLinkState,
     pub usb_status: String,
     pub capture_permission: CapturePermission,
-    pub virtual_display_status: String,
+    pub virtual_display: VirtualDisplayStatus,
     pub displays: Vec<DisplaySource>,
 }
 
@@ -166,7 +221,7 @@ pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 #[cfg(target_os = "windows")]
 pub use windows::{
     CapturedH264Stream, NativeInputController, UsbAccessoryManager, collect_status,
-    probe_screen_capture, request_capture_access,
+    disable_virtual_display, enable_virtual_display, probe_screen_capture, request_capture_access,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -252,6 +307,22 @@ impl PacketTransport for UsbAccessoryManager {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+pub fn enable_virtual_display() -> Result<VirtualDisplayActionReport, String> {
+    Err(format!(
+        "virtual-display lifecycle control is not implemented for {}",
+        std::env::consts::OS
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn disable_virtual_display() -> Result<VirtualDisplayActionReport, String> {
+    Err(format!(
+        "virtual-display lifecycle control is not implemented for {}",
+        std::env::consts::OS
+    ))
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[must_use]
 pub fn collect_status() -> PlatformStatus {
@@ -271,7 +342,10 @@ pub fn collect_status() -> PlatformStatus {
         usb_status: "Android Open Accessory host is not implemented on this platform yet."
             .to_owned(),
         capture_permission: CapturePermission::Unsupported,
-        virtual_display_status: "Native virtual-display adapter is not installed yet.".to_owned(),
+        virtual_display: VirtualDisplayStatus::unsupported(
+            "Native virtual-display lifecycle control is not implemented on this platform yet."
+                .to_owned(),
+        ),
         displays: Vec::new(),
     }
 }

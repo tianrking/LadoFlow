@@ -70,8 +70,10 @@ IddCx project separately compiles one stable virtual monitor, passes Universal
 API and INF validation, generates a development catalog, and exposes a JSON
 start/status/stop client over a versioned privileged-service boundary. The pipe
 rejects remote clients and the client verifies its server against SCM's PID. It
-has not yet been trusted and installed on this machine, so true extended-desktop
-behavior is not counted as physically proven.
+has been integrated into the Tauri lifecycle: structured status is polled with a
+short cache, enable waits for a real virtual `HMONITOR`, and the resulting source
+is selected automatically. It has not yet been trusted and installed on this
+machine, so true extended-desktop behavior is not counted as physically proven.
 
 The USB path enforces monotonically increasing sequence numbers per sender,
 uses an operating-system random session nonce, validates active input,
@@ -148,8 +150,11 @@ software-device lifecycle service, fixed-size v1 IPC contract, and unprivileged
 JSON controller. Its driver frame loop acknowledges DWM surfaces quickly; the
 desktop host captures the resulting virtual `HMONITOR` through the same verified
 WGC/encoder path. Source/build and non-installing service/IPC validation are
-complete; trusted installation, automatic host integration, signing, and
-physical extended-display evidence remain release gates.
+complete. The Tauri shell now owns bounded enable/disable calls, structured
+status, virtual-monitor discovery, and automatic source selection. The unsigned
+Windows bundle contains all native resources but does not register them with the
+operating system; trusted installation, rollback, signing, and physical
+extended-display evidence remain release gates.
 
 ### macOS
 

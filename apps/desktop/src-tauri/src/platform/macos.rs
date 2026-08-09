@@ -13,7 +13,10 @@ use screencapturekit::{
     },
 };
 
-use super::{CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus, UsbLinkState};
+use super::{
+    CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus, UsbLinkState,
+    VirtualDisplayStatus,
+};
 
 const CAPTURE_PROBE_DURATION: Duration = Duration::from_millis(750);
 const CAPTURE_QUEUE_DEPTH: u32 = 3;
@@ -34,8 +37,9 @@ pub fn collect_status() -> PlatformStatus {
         usb_link_state: UsbLinkState::Unsupported,
         usb_status: "Android Open Accessory host is not implemented on macOS yet".to_owned(),
         capture_permission: permission,
-        virtual_display_status:
+        virtual_display: VirtualDisplayStatus::unsupported(
             "Virtual-display creation remains isolated behind the native macOS adapter.".to_owned(),
+        ),
         displays: active_displays(),
     }
 }
@@ -261,6 +265,7 @@ fn active_displays() -> Vec<DisplaySource> {
                 width: display.pixels_wide(),
                 height: display.pixels_high(),
                 primary: display.is_main(),
+                virtual_display: false,
             }
         })
         .collect()

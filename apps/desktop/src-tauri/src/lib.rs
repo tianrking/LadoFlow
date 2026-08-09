@@ -25,6 +25,8 @@ pub fn run() {
             commands::run_screen_capture_probe,
             commands::prepare_android_usb,
             commands::disconnect_android_usb,
+            commands::enable_virtual_display,
+            commands::disable_virtual_display,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LadoFlow");

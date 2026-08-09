@@ -8,7 +8,10 @@ use tauri::State;
 
 use crate::{
     platform::{
-        CaptureProbeReport, UsbAccessoryProbeReport, probe_screen_capture, request_capture_access,
+        CaptureProbeReport, UsbAccessoryProbeReport, VirtualDisplayActionReport,
+        disable_virtual_display as disable_platform_virtual_display,
+        enable_virtual_display as enable_platform_virtual_display, probe_screen_capture,
+        request_capture_access,
     },
     runtime::{DesktopRuntime, HostSnapshot, LoopbackConfig},
 };
@@ -63,4 +66,24 @@ pub fn disconnect_android_usb(
     runtime: State<'_, Arc<DesktopRuntime>>,
 ) -> Result<HostSnapshot, String> {
     runtime.disconnect_android_usb()
+}
+
+#[tauri::command]
+pub async fn enable_virtual_display() -> Result<VirtualDisplayActionReport, String> {
+    tauri::async_runtime::spawn_blocking(enable_platform_virtual_display)
+        .await
+        .map_err(|error| format!("virtual-display enable worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn disable_virtual_display(
+    runtime: State<'_, Arc<DesktopRuntime>>,
+) -> Result<VirtualDisplayActionReport, String> {
+    let runtime = Arc::clone(runtime.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        let _snapshot = runtime.stop()?;
+        disable_platform_virtual_display()
+    })
+    .await
+    .map_err(|error| format!("virtual-display disable worker failed: {error}"))?
 }

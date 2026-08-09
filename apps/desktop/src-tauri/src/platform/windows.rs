@@ -35,7 +35,8 @@ use ::windows::{
             },
             Dxgi::{IDXGIAdapter, IDXGIDevice},
             Gdi::{
-                EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+                DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC,
+                HMONITOR, MONITORINFO, MONITORINFOEXW,
             },
         },
         System::WinRT::{
@@ -43,9 +44,9 @@ use ::windows::{
             Graphics::Capture::IGraphicsCaptureItemInterop, RO_INIT_MULTITHREADED, RoInitialize,
             RoUninitialize,
         },
-        UI::WindowsAndMessaging::MONITORINFOF_PRIMARY,
+        UI::WindowsAndMessaging::{EDD_GET_DEVICE_INTERFACE_NAME, MONITORINFOF_PRIMARY},
     },
-    core::{BOOL, IInspectable, Interface, factory},
+    core::{BOOL, IInspectable, Interface, PCWSTR, factory},
 };
 
 use super::{
@@ -58,9 +59,11 @@ mod input_injector;
 mod media_foundation;
 mod usb_accessory;
 mod video_processor;
+mod virtual_display;
 
 pub use input_injector::NativeInputController;
 pub use usb_accessory::UsbAccessoryManager;
+pub use virtual_display::{disable as disable_virtual_display, enable as enable_virtual_display};
 
 use self::media_foundation::{HardwareEncodeProbe, HardwareEncoder, MediaFoundationRuntime};
 
@@ -79,6 +82,12 @@ struct MonitorSource {
     handle: HMONITOR,
     rect: RECT,
     display: DisplaySource,
+}
+
+#[derive(Debug, Default)]
+struct DisplayDeviceIdentity {
+    device_id: String,
+    virtual_display: bool,
 }
 
 struct CaptureDevice {
@@ -522,8 +531,7 @@ pub fn collect_status() -> PlatformStatus {
         } else {
             CapturePermission::Unsupported
         },
-        virtual_display_status: "IddCx virtual-display driver is not installed by LadoFlow yet."
-            .to_owned(),
+        virtual_display: virtual_display::status(),
         displays,
     }
 }
@@ -950,6 +958,87 @@ fn enumerate_monitors() -> Result<Vec<MonitorSource>, String> {
     Ok(context.monitors)
 }
 
+fn query_display_device_identity(device_name: &[u16]) -> DisplayDeviceIdentity {
+    let expected_name = null_terminated_utf16(device_name);
+    if expected_name.is_empty() {
+        return DisplayDeviceIdentity::default();
+    }
+
+    for index in 0..64 {
+        let mut adapter = DISPLAY_DEVICEW {
+            cb: u32::try_from(size_of::<DISPLAY_DEVICEW>())
+                .expect("DISPLAY_DEVICEW size fits in a Win32 DWORD"),
+            ..Default::default()
+        };
+        // SAFETY: `adapter` is initialized with the documented structure size,
+        // and Win32 writes only for this synchronous call.
+        let found = unsafe {
+            EnumDisplayDevicesW(
+                PCWSTR::null(),
+                index,
+                &raw mut adapter,
+                EDD_GET_DEVICE_INTERFACE_NAME,
+            )
+        };
+        if !found.as_bool() {
+            break;
+        }
+        if !null_terminated_utf16(&adapter.DeviceName).eq_ignore_ascii_case(&expected_name) {
+            continue;
+        }
+
+        let mut identity_parts = vec![
+            null_terminated_utf16(&adapter.DeviceString),
+            null_terminated_utf16(&adapter.DeviceID),
+            null_terminated_utf16(&adapter.DeviceKey),
+        ];
+        let mut monitor = DISPLAY_DEVICEW {
+            cb: u32::try_from(size_of::<DISPLAY_DEVICEW>())
+                .expect("DISPLAY_DEVICEW size fits in a Win32 DWORD"),
+            ..Default::default()
+        };
+        // SAFETY: `adapter.DeviceName` is a nul-terminated array returned by
+        // Win32 above, and `monitor` has the required structure size.
+        let monitor_found = unsafe {
+            EnumDisplayDevicesW(
+                PCWSTR(adapter.DeviceName.as_ptr()),
+                0,
+                &raw mut monitor,
+                EDD_GET_DEVICE_INTERFACE_NAME,
+            )
+        };
+        if monitor_found.as_bool() {
+            identity_parts.extend([
+                null_terminated_utf16(&monitor.DeviceString),
+                null_terminated_utf16(&monitor.DeviceID),
+                null_terminated_utf16(&monitor.DeviceKey),
+            ]);
+        }
+
+        let device_id = identity_parts
+            .iter()
+            .skip(1)
+            .find(|value| !value.is_empty())
+            .cloned()
+            .unwrap_or_default();
+        return DisplayDeviceIdentity {
+            virtual_display: is_ladoflow_virtual_identity(&identity_parts),
+            device_id,
+        };
+    }
+    DisplayDeviceIdentity::default()
+}
+
+fn is_ladoflow_virtual_identity(parts: &[String]) -> bool {
+    let normalized = parts
+        .iter()
+        .flat_map(|part| part.chars())
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    normalized.contains("ladoflowvirtualdisplay")
+}
+
 unsafe extern "system" fn enumerate_monitor(
     monitor: HMONITOR,
     _device_context: HDC,
@@ -998,16 +1087,23 @@ unsafe extern "system" fn enumerate_monitor(
     }
 
     let device_path = null_terminated_utf16(&info.szDevice);
-    let id = if device_path.is_empty() {
+    let identity = query_display_device_identity(&info.szDevice);
+    let id = if identity.virtual_display && !identity.device_id.is_empty() {
+        format!("ladoflow:{}", identity.device_id)
+    } else if device_path.is_empty() {
         format!("hmonitor:{:p}", monitor.0)
     } else {
         device_path.clone()
     };
-    let name = device_path
-        .strip_prefix(r"\\.\")
-        .filter(|name| !name.is_empty())
-        .unwrap_or("Windows display")
-        .to_owned();
+    let name = if identity.virtual_display {
+        "LadoFlow Virtual Display".to_owned()
+    } else {
+        device_path
+            .strip_prefix(r"\\.\")
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Windows display")
+            .to_owned()
+    };
 
     context.monitors.push(MonitorSource {
         handle: monitor,
@@ -1018,6 +1114,7 @@ unsafe extern "system" fn enumerate_monitor(
             width,
             height,
             primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+            virtual_display: identity.virtual_display,
         },
     });
     BOOL(1)
@@ -1041,8 +1138,8 @@ mod tests {
 
     use super::{
         CapturedH264Stream, H264StreamConfig, SyntheticH264Stream, collect_status,
-        enumerate_display_sources, null_terminated_utf16, positive_dimension, probe_screen_capture,
-        validate_probe_fps,
+        enumerate_display_sources, is_ladoflow_virtual_identity, null_terminated_utf16,
+        positive_dimension, probe_screen_capture, validate_probe_fps,
     };
 
     #[test]
@@ -1072,7 +1169,19 @@ mod tests {
         eprintln!("{status:#?}");
         assert!(status.capture_backend.contains("Windows.Graphics.Capture"));
         assert!(status.encoder_status.contains("Media Foundation"));
-        assert!(status.virtual_display_status.contains("IddCx"));
+        assert!(status.virtual_display.detail.contains("virtual-display"));
+    }
+
+    #[test]
+    fn ladoflow_virtual_adapter_identity_is_specific() {
+        assert!(is_ladoflow_virtual_identity(&[
+            "LadoFlow Virtual Display Adapter".to_owned(),
+            "SWD\\LadoFlowVirtualDisplay\\1".to_owned(),
+        ]));
+        assert!(!is_ladoflow_virtual_identity(&[
+            "Intel(R) UHD Graphics".to_owned(),
+            "MONITOR\\Generic_PnP_Monitor".to_owned(),
+        ]));
     }
 
     #[test]

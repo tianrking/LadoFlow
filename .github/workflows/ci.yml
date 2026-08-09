@@ -90,6 +90,17 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install NuGet CLI for Windows native resources
+        if: runner.os == 'Windows'
+        uses: nuget/setup-nuget@v2
+        with:
+          nuget-version: '7.x'
+
+      - name: Build Windows virtual-display resources
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\platform\windows\idd\build.ps1
+
       - name: Build desktop frontend
         run: pnpm check:desktop
 

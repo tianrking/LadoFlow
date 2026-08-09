@@ -67,7 +67,7 @@ path; it is not automatically a release claim.
 - [x] Universal API/INF validation and test-signed development catalog build
 - [ ] Runtime mode/rotation negotiation with the connected mobile display
 - [ ] Trusted install plus sleep/wake, crash, GPU-reset, and rollback recovery
-- [ ] Automatic Tauri lifecycle and virtual-monitor selection integration
+- [x] Automatic Tauri lifecycle and virtual-monitor selection integration
 - [ ] Installer/uninstaller and rollback validation
 
 ## M6 — iOS/iPadOS display

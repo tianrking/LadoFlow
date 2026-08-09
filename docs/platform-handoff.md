@@ -73,8 +73,10 @@ into the ordered LDFL USB runtime. The real Windows screen-to-simulated-display
 protocol path has passed on physical Intel Quick Sync hardware. A separate
 one-monitor UMDF 2 IddCx project, LocalSystem lifecycle service, fixed v1 local
 IPC contract, and JSON client now build and pass their non-installing tests plus
-Universal API/INF/catalog validation. Trusted installation and physical Android
-USB proof remain separate milestones.
+Universal API/INF/catalog validation. The Tauri host polls structured controller
+state, performs bounded enable/disable calls, waits for the virtual monitor, and
+selects it automatically. Trusted installation and physical Android USB proof
+remain separate milestones.
 
 ### Phase A — capture/encode proof of concept
 
@@ -177,9 +179,13 @@ LocalSystem owner of the software-device handle. `LadoFlowVirtualDisplay.exe`
 is an ordinary-user JSON client for `start`, `status`, and `stop`; it reaches the
 service through a fixed-size pipe protocol that rejects remote clients, checks
 reserved fields and correlation IDs, and verifies the server PID against SCM.
-The remaining host integration must cover:
+The Tauri host now maps that JSON state into a typed platform status, caches
+short-lived polling results, and performs bounded enable/disable transitions.
+After enable it waits for the LadoFlow `HMONITOR` and selects it; after disable it
+waits for removal. The Windows NSIS build includes the controller, service, DLL,
+INF, and catalog as resources but intentionally does not claim to install them.
+The remaining host and installation work must cover:
 
-- connect/disconnect virtual monitor;
 - supported modes and active mode;
 - frame/surface handoff or encoded-stream handoff;
 - health, backpressure, restart, and fatal-error events.

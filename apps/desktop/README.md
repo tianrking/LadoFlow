@@ -38,7 +38,16 @@ Main encoder disables B-frames, handles asynchronous input/output events and
 dynamic output renegotiation, and preserves access-unit boundaries, timestamps,
 durations, and clean-point/IDR evidence. The complete capture-to-protocol path
 has produced real screen access units with Intel Quick Sync on physical Windows
-hardware. It mirrors an existing monitor; it is not yet an IddCx virtual display.
+hardware.
+
+The Windows shell also integrates the separate IddCx lifecycle boundary. It
+reads structured controller status without blocking the UI, enables or disables
+the LocalSystem-owned software device through bounded subprocess calls, waits
+for the real virtual `HMONITOR`, and selects that monitor automatically. A
+physical monitor remains an explicit fallback when the development driver and
+service are not installed. This lifecycle code is build- and unit-tested, but a
+trusted driver install and a physical extended-desktop run remain open proof
+boundaries.
 
 The Windows host also includes an explicit Android Open Accessory preparation
 path. Shared Rust code validates the exact AOA protocol query, six terminated
@@ -122,5 +131,10 @@ Build an unsigned Windows NSIS installer with:
 pnpm --filter @ladoflow/desktop tauri build --bundles nsis
 ```
 
-CI uploads that unsigned installer as a short-lived workflow artifact. Code
-signing remains a release gate; an unsigned CI artifact is not a public release.
+The Windows-specific bundle first builds the IddCx driver, service, and
+controller, then includes their binaries and driver package under the app's
+`windows` resources directory. It does **not** yet register the service or
+driver; installation, rollback, and exact driver removal are a separate
+administrator-level milestone. CI uploads that unsigned installer as a
+short-lived workflow artifact. Code signing remains a release gate; an unsigned
+CI artifact is not a public release.
