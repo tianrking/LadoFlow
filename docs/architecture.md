@@ -122,6 +122,12 @@ Every milestone must record at least:
 
 Use the supported Indirect Display Driver model where practical. The signed driver and privileged service remain native; the desktop UI does not run inside the driver process.
 
+The current adapter discovers monitors through Win32 and verifies selected-
+monitor capture with a hardware D3D11 device and a free-threaded
+`Windows.Graphics.Capture` frame pool. GPU surfaces stay native; only aggregate
+probe diagnostics cross into TypeScript. A long-running capture source, Media
+Foundation encoder, and IddCx service/driver remain separate boundaries.
+
 ### macOS
 
 Keep virtual-display integration isolated behind a native adapter because public API availability and distribution constraints can change by OS version. Signing and notarization are release gates, not afterthoughts.

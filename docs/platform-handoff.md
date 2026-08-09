@@ -63,24 +63,26 @@ as the API baseline.
 ## Windows: implementation handoff
 
 The Windows desktop crate now has a target-gated native adapter that checks
-`Windows.Graphics.Capture` support and enumerates active monitor geometry with
-`EnumDisplayMonitors`/`GetMonitorInfoW`. It reports real sources to the Tauri UI
-and validates source selection without claiming that frames have been captured.
-The D3D11 frame pool, encoding, service, and driver remain native milestones on
-a physical Windows development machine with Visual Studio and the matching WDK.
+`Windows.Graphics.Capture` support, enumerates active monitor geometry, creates
+a hardware D3D11 device, and runs a short free-threaded capture probe. The probe
+has received real GPU surfaces on physical Windows hardware and shuts its event
+handler, frame pool, and session down explicitly. The production frame loop,
+encoding, service, and driver remain native milestones.
 
 ### Phase A — capture/encode proof of concept
 
 1. [x] Add a target-gated Windows adapter, capture support probe, and display
    source enumeration while preserving the existing `PlatformStatus` shape.
-2. Implement an explicit source-selection flow and a cancellable
-   Windows.Graphics.Capture session backed by a small Direct3D 11 frame pool.
-3. Hand Direct3D surfaces to a Media Foundation encoder, preferring NV12 input
+2. [x] Prove selected-monitor capture with a bounded, free-threaded D3D11 frame
+   pool and expose real callback/surface/startup diagnostics in the desktop UI.
+3. Turn the probe into a cancellable long-running capture source with explicit
+   UI selection, resize handling, and device-loss recovery.
+4. Hand Direct3D surfaces to a Media Foundation encoder, preferring NV12 input
    and H.264 output. Record whether the selected transform is hardware-backed;
    do not label software encoding as hardware encoding.
-4. Feed encoded access units into the existing protocol/transport/runtime and
+5. Feed encoded access units into the existing protocol/transport/runtime and
    validate keyframe, resize, device-loss, stop, and restart behavior.
-5. Record capture, encode, enqueue, dequeue, and presentation timestamps so the
+6. Record capture, encode, enqueue, dequeue, and presentation timestamps so the
    same latency model is comparable with macOS.
 
 Windows.Graphics.Capture is suitable for the capture proof of concept and

@@ -253,7 +253,8 @@ function render(snapshot: HostSnapshot) {
   elements.captureBackend.textContent = `${snapshot.platform.captureBackend}. ${snapshot.platform.virtualDisplayStatus}`;
   elements.requestPermission.hidden = permissionGranted || permissionUnsupported;
   elements.requestPermission.disabled = busy;
-  elements.runCaptureProbe.hidden = snapshot.os !== "macos" || !permissionGranted;
+  const hasNativeCaptureProbe = snapshot.os === "macos" || snapshot.os === "windows";
+  elements.runCaptureProbe.hidden = !hasNativeCaptureProbe || !permissionGranted;
   elements.runCaptureProbe.disabled = busy;
   selectedDisplayId =
     snapshot.platform.displays.find((display) => display.primary)?.id ??

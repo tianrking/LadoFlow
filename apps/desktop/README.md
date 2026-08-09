@@ -5,7 +5,7 @@ layer and a Rust command/runtime layer. Shared protocol, session, transport, and
 media policy stays in workspace crates. OS-specific capture and virtual-display
 code stays behind target-gated adapters.
 
-## Run on macOS
+## Run on macOS or Windows
 
 Install the repository toolchain, then from the repository root:
 
@@ -26,6 +26,12 @@ capture/VideoToolbox stream and virtual-display creation remain separate native
 milestones; the UI does not claim that the synthetic path is a usable extended
 display.
 
+The Windows adapter enumerates active monitors and runs the same bounded native
+probe with `Windows.Graphics.Capture`, a hardware D3D11 device, and a
+free-threaded frame pool. The UI reports actual GPU-surface callbacks, dirty
+regions, dimensions, and startup timing. It does not yet claim a long-running
+encoder or virtual display.
+
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).
 
@@ -35,6 +41,12 @@ in the [platform handoff](../../docs/platform-handoff.md).
 pnpm check:desktop
 cargo clippy -p ladoflow-desktop --all-targets -- -D warnings
 cargo test -p ladoflow-desktop
+```
+
+On an interactive Windows desktop, verify the real GPU capture path explicitly:
+
+```powershell
+cargo test -p ladoflow-desktop native_capture_probe_receives_a_gpu_surface -- --ignored --nocapture
 ```
 
 Build an ad-hoc local macOS application bundle with:
