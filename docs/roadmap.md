@@ -41,6 +41,7 @@ path; it is not automatically a release claim.
 - [x] Windows Graphics Capture source enumeration and bounded GPU-surface probe
 - [x] Media Foundation hardware-MFT discovery and real NV12-to-Annex-B H.264 probe
 - [x] Long-running selected-display capture, GPU NV12 conversion, hardware encoder, and LDFL runtime handoff
+- [x] Capability-gated pointer, wheel, keyboard, and direct-touch injection with selected-monitor coordinate mapping
 - [ ] Isolate privileged/driver communication from the Tauri UI process
 - [ ] Repeatable 30/60 Hz capture-to-loopback latency test
 

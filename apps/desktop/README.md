@@ -62,15 +62,23 @@ increasing peer sequence numbers, computes a bounded H.264 Main configuration,
 and sends DisplayConfig before entering the connected state. The host nonce is
 filled from the operating-system random source. Active control traffic is
 decoded and bounded; Ping receives Pong, Android Error fails the session, and
-Input/Telemetry are validated without yet injecting native Windows input. A
-separate native worker captures the UI-selected Windows monitor and continuously
-hardware-encodes its GPU surfaces as timestamped H.264 Main access units. The
-session paces those units, marks IDR/clean-point frames, and sends every
-interdependent H.264 frame reliably over the same globally ordered LDFL stream
-while control remains responsive. Capture cancellation, source removal, resize,
-frame closure, and encoder shutdown are explicit. Automatic D3D device-loss
-recovery remains open, and this end-to-end USB path still requires proof with a
-physical Android device.
+Input is decoded only after its pointer, touch, or keyboard family was included
+in the negotiated capability intersection. Coordinates are bounded to the
+configured stream and mapped onto the selected monitor within the complete
+Windows virtual desktop. Pointer, button, wheel, and keyboard events use
+`SendInput`; direct contacts use `InitializeTouchInjection`/`InjectTouchInput`.
+Focus loss, disconnect, and worker teardown release every tracked button, key,
+and touch contact. Windows UIPI can still block input into a process running at a
+higher integrity level, which is surfaced as an error rather than hidden.
+
+A separate native worker captures the UI-selected Windows monitor and
+continuously hardware-encodes its GPU surfaces as timestamped H.264 Main access
+units. The session paces those units, marks IDR/clean-point frames, and sends
+every interdependent H.264 frame reliably over the same globally ordered LDFL
+stream while control remains responsive. Capture cancellation, source removal,
+resize, frame closure, and encoder shutdown are explicit. Automatic D3D
+device-loss recovery remains open, and the combined video/input USB path still
+requires proof with a physical Android device.
 
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).

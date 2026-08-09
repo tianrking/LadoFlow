@@ -54,10 +54,12 @@ use super::{
 };
 
 mod capture_stream;
+mod input_injector;
 mod media_foundation;
 mod usb_accessory;
 mod video_processor;
 
+pub use input_injector::NativeInputController;
 pub use usb_accessory::UsbAccessoryManager;
 
 use self::media_foundation::{HardwareEncodeProbe, HardwareEncoder, MediaFoundationRuntime};
@@ -75,6 +77,7 @@ struct EnumerationContext {
 
 struct MonitorSource {
     handle: HMONITOR,
+    rect: RECT,
     display: DisplaySource,
 }
 
@@ -1008,6 +1011,7 @@ unsafe extern "system" fn enumerate_monitor(
 
     context.monitors.push(MonitorSource {
         handle: monitor,
+        rect: info.monitorInfo.rcMonitor,
         display: DisplaySource {
             id,
             name,

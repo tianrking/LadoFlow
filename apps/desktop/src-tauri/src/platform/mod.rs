@@ -2,6 +2,9 @@ use serde::Serialize;
 use std::time::Duration;
 
 #[cfg(not(target_os = "windows"))]
+use ladoflow_protocol::InputEvent;
+
+#[cfg(not(target_os = "windows"))]
 use ladoflow_transport::{
     Channel, ConnectionState, Packet, PacketTransport, ReceiveError, SendError, SendReport,
 };
@@ -162,8 +165,8 @@ pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    CapturedH264Stream, UsbAccessoryManager, collect_status, probe_screen_capture,
-    request_capture_access,
+    CapturedH264Stream, NativeInputController, UsbAccessoryManager, collect_status,
+    probe_screen_capture, request_capture_access,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -181,6 +184,30 @@ impl CapturedH264Stream {
     pub fn try_next_batch(&self) -> Result<Option<H264StreamBatch>, String> {
         Err(format!(
             "native capture/H.264 streaming is not implemented for {}",
+            std::env::consts::OS
+        ))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub struct NativeInputController;
+
+#[cfg(not(target_os = "windows"))]
+impl NativeInputController {
+    pub fn new(
+        _display_id: Option<&str>,
+        _stream_width: u16,
+        _stream_height: u16,
+    ) -> Result<Self, String> {
+        Err(format!(
+            "native input injection is not implemented for {}",
+            std::env::consts::OS
+        ))
+    }
+
+    pub fn inject(&mut self, _event: InputEvent) -> Result<(), String> {
+        Err(format!(
+            "native input injection is not implemented for {}",
             std::env::consts::OS
         ))
     }

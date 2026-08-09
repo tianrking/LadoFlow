@@ -134,9 +134,13 @@ claim the app interface before reporting readiness.
    the selected live Windows display into the established USB session. The
    capture surface stays on the GPU through NV12 conversion and encoder input;
    interdependent frames are reliable rather than incorrectly superseded.
-7. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
+7. [x] Enforce the negotiated input mask, map remote coordinates only into the
+   selected monitor, and inject pointer, wheel, keyboard, and direct-touch
+   events through native Windows APIs. Focus loss and teardown release tracked
+   state; an actual Android touch-return run remains part of physical proof.
+8. [ ] Validate permission UI, sustained throughput, detach, input return, and reconnect on a
    physical Android device.
-8. [ ] Replace development driver setup with a signed, installer-managed
+9. [ ] Replace development driver setup with a signed, installer-managed
    WinUSB-compatible binding and verify rollback/uninstall.
 
 The AOA request and product-ID values follow the
@@ -145,6 +149,15 @@ and [AOA 2.0 additions](https://source.android.com/docs/core/interaction/accesso
 On Windows, libusb documents that a non-HID interface generally needs WinUSB,
 libusbK, or another compatible driver before user-mode access; the UI reports
 this as an installation requirement rather than a protocol failure.
+
+Windows mouse/keyboard synthesis follows Microsoft's
+[`SendInput` contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput),
+including its UIPI boundary. Absolute coordinates use the complete virtual
+desktop as required by the
+[`MOUSEINPUT` contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput).
+Direct contacts are initialized and submitted through
+[`InitializeTouchInjection`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-initializetouchinjection)
+and `InjectTouchInput`.
 
 ### Phase B — real extended display
 

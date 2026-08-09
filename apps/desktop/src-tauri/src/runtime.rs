@@ -27,10 +27,12 @@ use ladoflow_transport::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::host_protocol::{HostProtocolConfig, negotiate_host_transport, send_control_payload};
+use crate::host_protocol::{
+    EstablishedHostSession, HostProtocolConfig, negotiate_host_transport, send_control_payload,
+};
 use crate::platform::{
-    CapturedH264Stream, H264AccessUnit, H264StreamConfig, PlatformStatus, UsbAccessoryManager,
-    UsbAccessoryProbeReport, collect_status,
+    CapturedH264Stream, H264AccessUnit, H264StreamConfig, NativeInputController, PlatformStatus,
+    UsbAccessoryManager, UsbAccessoryProbeReport, collect_status,
 };
 
 const LATENCY_WINDOW: NonZeroUsize = NonZeroUsize::new(240).expect("240 is non-zero");
@@ -429,18 +431,7 @@ fn run_usb_control_session_inner(
     let protocol_config = HostProtocolConfig::new(config.width, config.height, config.fps)?;
     let established =
         negotiate_host_transport(transport, protocol_config, cancel, USB_NEGOTIATION_TIMEOUT)?;
-    let refresh_millihz = established.display_config.refresh_millihz();
-    if refresh_millihz % 1_000 != 0 {
-        return Err(format!(
-            "negotiated refresh rate {refresh_millihz} mHz cannot drive the integer-Hz runtime"
-        ));
-    }
-    let negotiated_config = LoopbackConfig {
-        width: established.display_config.width(),
-        height: established.display_config.height(),
-        fps: u16::try_from(refresh_millihz / 1_000)
-            .map_err(|_| "negotiated refresh rate exceeds the desktop range".to_owned())?,
-    };
+    let (negotiated_config, input_capabilities) = negotiated_runtime_parameters(&established)?;
     let mut next_sequence = established.next_sequence;
     {
         let mut state = lock_arc(shared);
@@ -459,6 +450,17 @@ fn run_usb_control_session_inner(
         established.display_config.bitrate_kbps(),
     )?;
     let video_stream = CapturedH264Stream::start(stream_config, display_id.map(ToOwned::to_owned))?;
+    let mut input = NativeInputController::new(
+        display_id,
+        negotiated_config.width,
+        negotiated_config.height,
+    )?;
+    let control = UsbControlContext {
+        shared,
+        cancel,
+        clock_origin,
+        input_capabilities,
+    };
     let mut access_units = VecDeque::<H264AccessUnit>::new();
     let mut media_clock_offset = None::<Duration>;
     let mut encoder_name = None::<String>;
@@ -480,12 +482,11 @@ fn run_usb_control_session_inner(
             .map_err(|error| format!("Android USB control receive failed: {error}"))?
         {
             handle_usb_control(
-                shared,
-                cancel,
+                &control,
                 transport,
                 packet,
-                clock_origin,
                 &mut next_sequence,
+                &mut |event| input.inject(event),
             )?;
             made_progress = true;
         }
@@ -531,6 +532,33 @@ fn run_usb_control_session_inner(
         }
     }
     Ok(())
+}
+
+fn negotiated_runtime_parameters(
+    established: &EstablishedHostSession,
+) -> Result<(LoopbackConfig, InputCapabilities), String> {
+    let agreement = established
+        .session
+        .agreement()
+        .ok_or_else(|| "established USB session has no negotiated agreement".to_owned())?;
+    let input = InputCapabilities::from_bits(agreement.capabilities().input_bits())
+        .map_err(|error| error.to_string())?;
+    let config = LoopbackConfig {
+        width: established.display_config.width(),
+        height: established.display_config.height(),
+        fps: integer_refresh_hz(established.display_config.refresh_millihz())?,
+    };
+    Ok((config, input))
+}
+
+fn integer_refresh_hz(refresh_millihz: u32) -> Result<u16, String> {
+    if refresh_millihz % 1_000 != 0 {
+        return Err(format!(
+            "negotiated refresh rate {refresh_millihz} mHz cannot drive the integer-Hz runtime"
+        ));
+    }
+    u16::try_from(refresh_millihz / 1_000)
+        .map_err(|_| "negotiated refresh rate exceeds the desktop range".to_owned())
 }
 
 fn align_media_clock(
@@ -602,13 +630,19 @@ fn send_usb_h264_access_unit(
     Ok(())
 }
 
+struct UsbControlContext<'a> {
+    shared: &'a Arc<Mutex<SharedState>>,
+    cancel: &'a AtomicBool,
+    clock_origin: Instant,
+    input_capabilities: InputCapabilities,
+}
+
 fn handle_usb_control(
-    shared: &Arc<Mutex<SharedState>>,
-    cancel: &AtomicBool,
+    context: &UsbControlContext<'_>,
     transport: &mut impl PacketTransport,
     packet: Packet,
-    clock_origin: Instant,
     next_sequence: &mut u64,
+    inject_input: &mut impl FnMut(InputEvent) -> Result<(), String>,
 ) -> Result<(), String> {
     let packet_len = packet.len();
     let packet_bytes = packet.into_payload();
@@ -622,7 +656,7 @@ fn handle_usb_control(
     }
     let sequence = frame.header().sequence();
     let disposition = {
-        let mut state = lock_arc(shared);
+        let mut state = lock_arc(context.shared);
         state
             .session
             .as_mut()
@@ -641,19 +675,19 @@ fn handle_usb_control(
             let request = frame
                 .decode_payload::<Ping>()
                 .map_err(|error| error.to_string())?;
-            let received_at = duration_micros_u64(clock_origin.elapsed());
+            let received_at = duration_micros_u64(context.clock_origin.elapsed());
             let response = Pong::new(
                 request.token(),
                 request.client_send_timestamp_micros(),
                 received_at,
-                duration_micros_u64(clock_origin.elapsed()),
+                duration_micros_u64(context.clock_origin.elapsed()),
             )
             .map_err(|error| error.to_string())?;
             send_control_payload(
                 transport,
                 *next_sequence,
                 &response,
-                cancel,
+                context.cancel,
                 USB_CONTROL_SEND_TIMEOUT,
             )?;
             *next_sequence = next_sequence
@@ -666,15 +700,18 @@ fn handle_usb_control(
                 .map_err(|error| error.to_string())?;
         }
         MessageType::Input => {
-            frame
+            let event = frame
                 .decode_payload::<InputEvent>()
                 .map_err(|error| error.to_string())?;
+            require_negotiated_input(event, context.input_capabilities)?;
+            inject_input(event)
+                .map_err(|error| format!("failed to apply Android input on Windows: {error}"))?;
         }
         MessageType::Telemetry => {
             let telemetry = frame
                 .decode_payload::<Telemetry>()
                 .map_err(|error| error.to_string())?;
-            let mut state = lock_arc(shared);
+            let mut state = lock_arc(context.shared);
             apply_usb_telemetry(&mut state, telemetry)?;
         }
         MessageType::Error => {
@@ -694,6 +731,34 @@ fn handle_usb_control(
         }
     }
     Ok(())
+}
+
+fn require_negotiated_input(
+    event: InputEvent,
+    capabilities: InputCapabilities,
+) -> Result<(), String> {
+    let required = match event.kind() {
+        ladoflow_protocol::InputEventKind::PointerMove { .. }
+        | ladoflow_protocol::InputEventKind::PointerButton { .. }
+        | ladoflow_protocol::InputEventKind::Wheel { .. } => InputCapabilities::POINTER,
+        ladoflow_protocol::InputEventKind::Key { .. } => InputCapabilities::KEYBOARD,
+        ladoflow_protocol::InputEventKind::Touch { .. } => InputCapabilities::TOUCH,
+        ladoflow_protocol::InputEventKind::Focus { .. } if capabilities.bits() != 0 => {
+            return Ok(());
+        }
+        ladoflow_protocol::InputEventKind::Focus { .. } => {
+            return Err(
+                "Android sent focus input without a negotiated input capability".to_owned(),
+            );
+        }
+    };
+    if capabilities.contains(required) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Android sent {required:?} input without negotiating that capability"
+        ))
+    }
 }
 
 fn apply_usb_telemetry(state: &mut SharedState, telemetry: Telemetry) -> Result<(), String> {
@@ -979,7 +1044,8 @@ mod tests {
 
     use ladoflow_protocol::{
         Capabilities, CodecSet, DecodeOutcome, FeatureFlags, Frame as WireFrame, FrameFlags, Hello,
-        InputCapabilities, Ping, Pong, Role, StageTimings, Telemetry, ThermalState, VideoFrame,
+        InputCapabilities, InputEvent, InputEventKind, Ping, Pong, Role, StageTimings, Telemetry,
+        ThermalState, VideoFrame,
     };
     use ladoflow_transport::{
         Channel, LoopbackConfig as TransportConfig, Packet, PacketTransport, loopback_pair,
@@ -987,8 +1053,8 @@ mod tests {
 
     use super::{
         DesktopRuntime, H264AccessUnit, LoopbackConfig, SessionPhaseView, SharedState,
-        align_media_clock, apply_usb_telemetry, handle_usb_control, negotiated_session,
-        run_usb_control_session_inner, send_usb_h264_access_unit,
+        UsbControlContext, align_media_clock, apply_usb_telemetry, handle_usb_control,
+        negotiated_session, run_usb_control_session_inner, send_usb_h264_access_unit,
     };
 
     #[test]
@@ -1134,14 +1200,20 @@ mod tests {
         let packet = Packet::control(wire_ping.encode());
         let cancel = AtomicBool::new(false);
         let mut next_sequence = 3;
+        let mut inject_input = |_event| Ok(());
+        let context = UsbControlContext {
+            shared: &shared,
+            cancel: &cancel,
+            clock_origin: Instant::now(),
+            input_capabilities: InputCapabilities::POINTER | InputCapabilities::TOUCH,
+        };
 
         handle_usb_control(
-            &shared,
-            &cancel,
+            &context,
             &mut host,
             packet.clone(),
-            Instant::now(),
             &mut next_sequence,
+            &mut inject_input,
         )
         .expect("Ping is accepted");
         assert_eq!(next_sequence, 4);
@@ -1162,16 +1234,80 @@ mod tests {
 
         assert!(
             handle_usb_control(
-                &shared,
-                &cancel,
+                &context,
                 &mut host,
                 packet,
-                Instant::now(),
                 &mut next_sequence,
+                &mut inject_input,
             )
             .expect_err("replayed sequence is rejected")
             .contains("duplicate or stale")
         );
+    }
+
+    #[test]
+    fn active_usb_input_is_decoded_and_forwarded_to_the_native_sink() {
+        let config = LoopbackConfig {
+            width: 1_280,
+            height: 720,
+            fps: 30,
+        };
+        let mut state = SharedState::new();
+        state.establish_usb_control(
+            config,
+            negotiated_session(config).expect("test session"),
+            "LadoFlow Android".to_owned(),
+        );
+        let shared = Arc::new(Mutex::new(state));
+        let (mut host, _display) = loopback_pair(TransportConfig::default());
+        let event = InputEvent::new(42, InputEventKind::PointerMove { x: 640, y: 360 })
+            .expect("valid pointer input");
+        let wire = WireFrame::from_payload(FrameFlags::NONE, 2, &event).expect("Input frame");
+        let cancel = AtomicBool::new(false);
+        let mut next_sequence = 3;
+        let mut injected = Vec::new();
+        let context = UsbControlContext {
+            shared: &shared,
+            cancel: &cancel,
+            clock_origin: Instant::now(),
+            input_capabilities: InputCapabilities::POINTER | InputCapabilities::TOUCH,
+        };
+
+        handle_usb_control(
+            &context,
+            &mut host,
+            Packet::control(wire.encode()),
+            &mut next_sequence,
+            &mut |event| {
+                injected.push(event);
+                Ok(())
+            },
+        )
+        .expect("Input reaches the native sink");
+
+        assert_eq!(injected, vec![event]);
+        assert_eq!(next_sequence, 3);
+
+        let keyboard = InputEvent::new(
+            43,
+            InputEventKind::Key {
+                usage: 0x04,
+                state: ladoflow_protocol::ButtonState::Pressed,
+                modifiers: ladoflow_protocol::KeyModifiers::default(),
+            },
+        )
+        .expect("valid keyboard input");
+        let wire =
+            WireFrame::from_payload(FrameFlags::NONE, 3, &keyboard).expect("keyboard Input frame");
+        let error = handle_usb_control(
+            &context,
+            &mut host,
+            Packet::control(wire.encode()),
+            &mut next_sequence,
+            &mut |_event| panic!("non-negotiated keyboard input must not reach the sink"),
+        )
+        .expect_err("keyboard capability was not negotiated");
+        assert!(error.contains("without negotiating"));
     }
 
     #[test]
