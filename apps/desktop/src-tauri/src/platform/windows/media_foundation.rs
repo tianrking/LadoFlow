@@ -3,6 +3,7 @@
 #![allow(unsafe_code)]
 
 use std::{
+    collections::VecDeque,
     ffi::c_void,
     mem::ManuallyDrop,
     ptr::NonNull,
@@ -12,19 +13,25 @@ use std::{
 
 use ::windows::{
     Win32::{
-        Graphics::{Direct3D::D3D_DRIVER_TYPE_HARDWARE, Direct3D11::ID3D11Device},
+        Graphics::{
+            Direct3D::D3D_DRIVER_TYPE_HARDWARE,
+            Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Texture2D},
+            Dxgi::Common::DXGI_FORMAT_NV12,
+        },
         Media::MediaFoundation::{
-            IMFActivate, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaEventGenerator, IMFSample,
-            IMFTransform, METransformDrainComplete, METransformHaveOutput, METransformNeedInput,
+            CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
+            CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate, IMFDXGIDeviceManager,
+            IMFMediaBuffer, IMFMediaEventGenerator, IMFSample, IMFTransform,
+            METransformDrainComplete, METransformHaveOutput, METransformNeedInput,
             MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
             MF_EVENT_FLAG_NO_WAIT, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE,
             MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
             MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE,
             MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
-            MF_VERSION, MFCreateDXGIDeviceManager, MFCreateMediaType, MFCreateMemoryBuffer,
-            MFCreateSample, MFMediaType_Video, MFSTARTUP_FULL, MFSampleExtension_CleanPoint,
-            MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE,
-            MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_HARDWARE_URL_Attribute,
+            MF_VERSION, MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateMediaType,
+            MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_FULL,
+            MFSampleExtension_CleanPoint, MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_ENCODER,
+            MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_HARDWARE_URL_Attribute,
             MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_COMMAND_FLUSH,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
             MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
@@ -34,7 +41,7 @@ use ::windows::{
             MFT_TRANSFORM_CLSID_Attribute, MFTEnumEx, MFVideoFormat_H264, MFVideoFormat_NV12,
             MFVideoInterlace_Progressive, eAVEncH264VProfile_Main,
         },
-        System::Com::CoTaskMemFree,
+        System::{Com::CoTaskMemFree, Variant::VARIANT},
     },
     core::{GUID, Interface, PWSTR},
 };
@@ -45,6 +52,7 @@ const PROBE_FPS: u32 = 30;
 const PROBE_BITRATE: u32 = 2_000_000;
 const PROBE_FRAME_COUNT: u32 = 8;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const STREAM_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
 const HUNDRED_NANOSECONDS_PER_SECOND: i64 = 10_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +247,195 @@ impl MediaFoundationRuntime {
     }
 }
 
+pub(super) struct HardwareH264Encoder {
+    encoder_name: String,
+    activation: IMFActivate,
+    transform: IMFTransform,
+    events: Option<IMFMediaEventGenerator>,
+    asynchronous: bool,
+    input_ready: bool,
+    config: H264EncoderConfig,
+    pending_outputs: VecDeque<EncodedAccessUnit>,
+    d3d_manager: Option<D3dManagerBinding>,
+}
+
+impl HardwareH264Encoder {
+    pub fn start(config: H264EncoderConfig, device: &ID3D11Device) -> Result<Self, String> {
+        let config = config.validate()?;
+        let mut activations = hardware_h264_activations()?;
+        activations.sort_by_key(|activation| hardware_encoder_metadata(activation).name);
+        if activations.is_empty() {
+            return Err("Media Foundation reported no hardware H.264 encoder".to_owned());
+        }
+        let mut failures = Vec::with_capacity(activations.len());
+        for activation in activations {
+            let encoder_name = hardware_encoder_metadata(&activation).name;
+            match Self::start_activation(activation.clone(), encoder_name.clone(), config, device) {
+                Ok(encoder) => return Ok(encoder),
+                Err(error) => {
+                    let _shutdown = unsafe { activation.ShutdownObject() };
+                    failures.push(format!("{encoder_name}: {error}"));
+                }
+            }
+        }
+        Err(format!(
+            "all real-time hardware H.264 encoders failed ({})",
+            failures.join("; ")
+        ))
+    }
+
+    fn start_activation(
+        activation: IMFActivate,
+        encoder_name: String,
+        config: H264EncoderConfig,
+        device: &ID3D11Device,
+    ) -> Result<Self, String> {
+        let transform = unsafe { activation.ActivateObject::<IMFTransform>() }
+            .map_err(|error| format!("failed to activate encoder: {error}"))?;
+        let asynchronous = unlock_if_asynchronous(&transform)?;
+        let d3d_manager = bind_d3d11_manager_if_supported(&transform, Some(device))?;
+        configure_transform(&transform, config)?;
+        configure_realtime_codec(&transform, config)?;
+        unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0) }
+            .map_err(|error| format!("failed to begin encoder streaming: {error}"))?;
+        unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0) }
+            .map_err(|error| format!("failed to start encoder stream: {error}"))?;
+        let events = if asynchronous {
+            Some(
+                transform
+                    .cast::<IMFMediaEventGenerator>()
+                    .map_err(|error| {
+                        format!("asynchronous encoder has no event generator: {error}")
+                    })?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            encoder_name,
+            activation,
+            transform,
+            events,
+            asynchronous,
+            input_ready: !asynchronous,
+            config,
+            pending_outputs: VecDeque::new(),
+            d3d_manager,
+        })
+    }
+
+    pub fn encoder_name(&self) -> &str {
+        &self.encoder_name
+    }
+
+    pub fn encode_texture(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        timestamp_100ns: i64,
+    ) -> Result<Vec<EncodedAccessUnit>, String> {
+        validate_nv12_texture(texture, self.config)?;
+        let sample =
+            create_dxgi_sample(texture, timestamp_100ns, self.config.frame_duration_100ns())?;
+        if self.asynchronous {
+            self.encode_texture_async(&sample, timestamp_100ns)
+        } else {
+            self.encode_texture_sync(&sample)
+        }
+    }
+
+    fn encode_texture_async(
+        &mut self,
+        sample: &IMFSample,
+        timestamp_100ns: i64,
+    ) -> Result<Vec<EncodedAccessUnit>, String> {
+        let deadline = Instant::now() + STREAM_EVENT_TIMEOUT;
+        while !self.input_ready {
+            self.pump_stream_event(deadline)?;
+        }
+        unsafe { self.transform.ProcessInput(0, sample, 0) }
+            .map_err(|error| format!("real-time encoder rejected NV12 texture: {error}"))?;
+        self.input_ready = false;
+
+        let mut matching_output = false;
+        while !matching_output {
+            self.pump_stream_event(deadline)?;
+            matching_output = self.pending_outputs.iter().any(|unit| {
+                unit.timestamp_100ns
+                    .is_some_and(|timestamp| timestamp >= timestamp_100ns)
+            });
+        }
+        Ok(self.pending_outputs.drain(..).collect())
+    }
+
+    fn pump_stream_event(&mut self, deadline: Instant) -> Result<(), String> {
+        if Instant::now() >= deadline {
+            return Err("real-time H.264 encoder event timed out".to_owned());
+        }
+        let events = self
+            .events
+            .as_ref()
+            .ok_or_else(|| "asynchronous H.264 encoder has no event generator".to_owned())?;
+        let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+            Ok(event) => event,
+            Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
+                thread::sleep(Duration::from_millis(1));
+                return Ok(());
+            }
+            Err(error) => return Err(format!("failed to poll real-time encoder event: {error}")),
+        };
+        let status = unsafe { event.GetStatus() }
+            .map_err(|error| format!("failed to read real-time encoder event status: {error}"))?;
+        status
+            .ok()
+            .map_err(|error| format!("real-time encoder event failed: {error}"))?;
+        let event_type = unsafe { event.GetType() }
+            .map_err(|error| format!("failed to read real-time encoder event type: {error}"))?;
+        if event_type == u32::try_from(METransformNeedInput.0).unwrap_or_default() {
+            self.input_ready = true;
+        } else if event_type == u32::try_from(METransformHaveOutput.0).unwrap_or_default()
+            && let Some(output) = take_output(&self.transform)?
+            && !output.bytes.is_empty()
+        {
+            self.pending_outputs.push_back(output);
+        }
+        Ok(())
+    }
+
+    fn encode_texture_sync(
+        &mut self,
+        sample: &IMFSample,
+    ) -> Result<Vec<EncodedAccessUnit>, String> {
+        unsafe { self.transform.ProcessInput(0, sample, 0) }
+            .map_err(|error| format!("real-time encoder rejected NV12 texture: {error}"))?;
+        let mut outputs = Vec::new();
+        loop {
+            match take_output(&self.transform) {
+                Ok(Some(output)) if !output.bytes.is_empty() => outputs.push(output),
+                Ok(Some(_) | None) => {}
+                Err(error) if error.contains("needs more input") => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(outputs)
+    }
+}
+
+impl Drop for HardwareH264Encoder {
+    fn drop(&mut self) {
+        let _end = unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0)
+        };
+        let _flush = unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0) };
+        let _stop = unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0)
+        };
+        drop(self.d3d_manager.take());
+        let _shutdown = unsafe { self.activation.ShutdownObject() };
+    }
+}
+
 fn hardware_h264_activations() -> Result<Vec<IMFActivate>, String> {
     let input = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
@@ -296,8 +493,9 @@ fn encode_activation(
     let transform = unsafe { activation.ActivateObject::<IMFTransform>() }
         .map_err(|error| format!("failed to activate encoder: {error}"))?;
     let asynchronous = unlock_if_asynchronous(&transform)?;
-    let _d3d_manager = bind_d3d11_manager_if_supported(&transform)?;
+    let _d3d_manager = bind_d3d11_manager_if_supported(&transform, None)?;
     configure_transform(&transform, config)?;
+    configure_realtime_codec(&transform, config)?;
 
     // SAFETY: these messages follow successful media-type negotiation and are
     // paired with end-of-stream/flush cleanup below.
@@ -346,13 +544,13 @@ fn encode_activation(
     })
 }
 
-struct D3dManagerBinding<'a> {
-    transform: &'a IMFTransform,
+struct D3dManagerBinding {
+    transform: IMFTransform,
     _device: ID3D11Device,
     _manager: IMFDXGIDeviceManager,
 }
 
-impl Drop for D3dManagerBinding<'_> {
+impl Drop for D3dManagerBinding {
     fn drop(&mut self) {
         // SAFETY: zero clears the manager previously attached to this MFT.
         let _ = unsafe {
@@ -364,7 +562,8 @@ impl Drop for D3dManagerBinding<'_> {
 
 fn bind_d3d11_manager_if_supported(
     transform: &IMFTransform,
-) -> Result<Option<D3dManagerBinding<'_>>, String> {
+    shared_device: Option<&ID3D11Device>,
+) -> Result<Option<D3dManagerBinding>, String> {
     // SAFETY: the transform owns the returned attribute store.
     let attributes = unsafe { transform.GetAttributes() }
         .map_err(|error| format!("failed to query encoder D3D attributes: {error}"))?;
@@ -374,8 +573,11 @@ fn bind_d3d11_manager_if_supported(
         return Ok(None);
     }
 
-    let device = super::create_native_d3d11_device(D3D_DRIVER_TYPE_HARDWARE)
-        .map_err(|error| format!("failed to create encoder D3D11 device: {error}"))?;
+    let device = match shared_device {
+        Some(device) => device.clone(),
+        None => super::create_native_d3d11_device(D3D_DRIVER_TYPE_HARDWARE)
+            .map_err(|error| format!("failed to create encoder D3D11 device: {error}"))?,
+    };
     let mut reset_token = 0_u32;
     let mut manager = None;
     // SAFETY: both output pointers reference initialized local storage.
@@ -392,7 +594,7 @@ fn bind_d3d11_manager_if_supported(
         .map_err(|error| format!("encoder rejected its DXGI device manager: {error}"))?;
 
     Ok(Some(D3dManagerBinding {
-        transform,
+        transform: transform.clone(),
         _device: device,
         _manager: manager,
     }))
@@ -434,6 +636,59 @@ fn configure_transform(transform: &IMFTransform, config: H264EncoderConfig) -> R
     unsafe { transform.SetInputType(0, &input, 0) }
         .map_err(|error| format!("failed to set NV12 input media type: {error}"))?;
     Ok(())
+}
+
+fn configure_realtime_codec(
+    transform: &IMFTransform,
+    config: H264EncoderConfig,
+) -> Result<(), String> {
+    let codec = transform
+        .cast::<ICodecAPI>()
+        .map_err(|error| format!("H.264 encoder exposes no ICodecAPI: {error}"))?;
+    set_codec_value(
+        &codec,
+        &CODECAPI_AVLowLatencyMode,
+        &VARIANT::from(true),
+        true,
+        "low-latency mode",
+    )?;
+    set_codec_value(
+        &codec,
+        &CODECAPI_AVEncMPVDefaultBPictureCount,
+        &VARIANT::from(0_u32),
+        false,
+        "zero B-frame count",
+    )?;
+    let gop_size = config.fps.saturating_mul(2).max(1);
+    set_codec_value(
+        &codec,
+        &CODECAPI_AVEncMPVGOPSize,
+        &VARIANT::from(gop_size),
+        false,
+        "two-second GOP",
+    )
+}
+
+fn set_codec_value(
+    codec: &ICodecAPI,
+    key: &GUID,
+    value: &VARIANT,
+    required: bool,
+    label: &str,
+) -> Result<(), String> {
+    let supported = unsafe { codec.IsSupported(key) };
+    if let Err(error) = supported {
+        return if required {
+            Err(format!("H.264 encoder does not support {label}: {error}"))
+        } else {
+            Ok(())
+        };
+    }
+    match unsafe { codec.SetValue(key, value) } {
+        Ok(()) => Ok(()),
+        Err(_error) if !required => Ok(()),
+        Err(error) => Err(format!("failed to enable H.264 {label}: {error}")),
+    }
 }
 
 fn create_video_type(
@@ -763,6 +1018,45 @@ fn create_nv12_sample(config: H264EncoderConfig, frame_index: u32) -> Result<IMF
     unsafe { sample.SetSampleDuration(duration) }
         .map_err(|error| format!("failed to set NV12 input duration: {error}"))?;
     Ok(sample)
+}
+
+fn create_dxgi_sample(
+    texture: &ID3D11Texture2D,
+    timestamp_100ns: i64,
+    duration_100ns: i64,
+) -> Result<IMFSample, String> {
+    let buffer = unsafe { MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, texture, 0, false) }
+        .map_err(|error| format!("failed to wrap NV12 texture for Media Foundation: {error}"))?;
+    let sample = unsafe { MFCreateSample() }
+        .map_err(|error| format!("failed to create NV12 DXGI sample: {error}"))?;
+    unsafe { sample.AddBuffer(&buffer) }
+        .map_err(|error| format!("failed to attach NV12 DXGI surface: {error}"))?;
+    unsafe { sample.SetSampleTime(timestamp_100ns) }
+        .map_err(|error| format!("failed to timestamp NV12 DXGI sample: {error}"))?;
+    unsafe { sample.SetSampleDuration(duration_100ns) }
+        .map_err(|error| format!("failed to set NV12 DXGI sample duration: {error}"))?;
+    Ok(sample)
+}
+
+fn validate_nv12_texture(
+    texture: &ID3D11Texture2D,
+    config: H264EncoderConfig,
+) -> Result<(), String> {
+    let mut description = D3D11_TEXTURE2D_DESC::default();
+    unsafe { texture.GetDesc(&raw mut description) };
+    if description.Width != config.width || description.Height != config.height {
+        return Err(format!(
+            "NV12 texture is {}x{}, encoder requires {}x{}",
+            description.Width, description.Height, config.width, config.height
+        ));
+    }
+    if description.Format != DXGI_FORMAT_NV12 {
+        return Err(format!(
+            "encoder input texture format {} is not NV12",
+            description.Format.0
+        ));
+    }
+    Ok(())
 }
 
 fn read_access_unit(sample: &IMFSample) -> Result<EncodedAccessUnit, String> {

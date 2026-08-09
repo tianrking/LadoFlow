@@ -53,8 +53,10 @@ use super::{
     H264StreamConfig, PlatformStatus, UsbLinkState,
 };
 
+mod capture_stream;
 mod media_foundation;
 mod usb_accessory;
+mod video_processor;
 
 pub use usb_accessory::UsbAccessoryManager;
 
@@ -77,6 +79,7 @@ struct MonitorSource {
 }
 
 struct CaptureDevice {
+    native: ID3D11Device,
     runtime: IDirect3DDevice,
     backend: &'static str,
 }
@@ -127,12 +130,58 @@ struct CaptureWorker {
     commands: SyncSender<CaptureCommand>,
 }
 
+#[cfg(test)]
 pub struct SyntheticH264Stream {
     cancel: Arc<AtomicBool>,
     receiver: Receiver<Result<H264StreamBatch, String>>,
     handle: Option<JoinHandle<()>>,
 }
 
+pub struct CapturedH264Stream {
+    cancel: Arc<AtomicBool>,
+    receiver: Receiver<Result<H264StreamBatch, String>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl CapturedH264Stream {
+    pub fn start(config: H264StreamConfig, display_id: Option<String>) -> Result<Self, String> {
+        let config =
+            H264StreamConfig::new(config.width, config.height, config.fps, config.bitrate_kbps)?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let (sender, receiver) = sync_channel(2);
+        let handle = thread::Builder::new()
+            .name("ladoflow-windows-capture-h264".to_owned())
+            .spawn(move || {
+                if let Err(error) =
+                    capture_stream::run(config, display_id.as_deref(), &worker_cancel, &sender)
+                {
+                    let _sent = send_encoder_result(&sender, Err(error), &worker_cancel);
+                }
+            })
+            .map_err(|error| format!("failed to start Windows capture/H.264 worker: {error}"))?;
+        Ok(Self {
+            cancel,
+            receiver,
+            handle: Some(handle),
+        })
+    }
+
+    pub fn try_next_batch(&self) -> Result<Option<H264StreamBatch>, String> {
+        receive_h264_batch(&self.receiver, &self.cancel, "Windows capture/H.264 worker")
+    }
+}
+
+impl Drop for CapturedH264Stream {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _result = handle.join();
+        }
+    }
+}
+
+#[cfg(test)]
 impl SyntheticH264Stream {
     pub fn start(config: H264StreamConfig) -> Result<Self, String> {
         let config =
@@ -167,18 +216,27 @@ impl SyntheticH264Stream {
     }
 
     pub fn try_next_batch(&self) -> Result<Option<H264StreamBatch>, String> {
-        match self.receiver.try_recv() {
-            Ok(Ok(batch)) => Ok(Some(batch)),
-            Ok(Err(error)) => Err(error),
-            Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Disconnected) if self.cancel.load(Ordering::Acquire) => Ok(None),
-            Err(TryRecvError::Disconnected) => {
-                Err("Windows H.264 worker stopped without a diagnostic".to_owned())
-            }
+        receive_h264_batch(&self.receiver, &self.cancel, "Windows H.264 worker")
+    }
+}
+
+fn receive_h264_batch(
+    receiver: &Receiver<Result<H264StreamBatch, String>>,
+    cancel: &AtomicBool,
+    worker_name: &str,
+) -> Result<Option<H264StreamBatch>, String> {
+    match receiver.try_recv() {
+        Ok(Ok(batch)) => Ok(Some(batch)),
+        Ok(Err(error)) => Err(error),
+        Err(TryRecvError::Empty) => Ok(None),
+        Err(TryRecvError::Disconnected) if cancel.load(Ordering::Acquire) => Ok(None),
+        Err(TryRecvError::Disconnected) => {
+            Err(format!("{worker_name} stopped without a diagnostic"))
         }
     }
 }
 
+#[cfg(test)]
 impl Drop for SyntheticH264Stream {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Release);
@@ -188,6 +246,7 @@ impl Drop for SyntheticH264Stream {
     }
 }
 
+#[cfg(test)]
 fn run_synthetic_h264_stream(
     config: media_foundation::H264EncoderConfig,
     cancel: &AtomicBool,
@@ -233,16 +292,24 @@ fn send_encoder_result(
     }
 }
 
+#[cfg(test)]
 fn convert_h264_batch(batch: media_foundation::H264EncodeBatch) -> Result<H264StreamBatch, String> {
-    if batch.access_units.is_empty() {
-        return Err("Windows H.264 encoder returned an empty access-unit batch".to_owned());
-    }
     if !batch.access_units.first().is_some_and(|unit| unit.keyframe) {
         return Err("Windows H.264 batch does not begin with a keyframe".to_owned());
     }
+    convert_h264_access_units(batch.encoder_name, batch.access_units)
+}
+
+fn convert_h264_access_units(
+    encoder_name: String,
+    encoded: Vec<media_foundation::EncodedAccessUnit>,
+) -> Result<H264StreamBatch, String> {
+    if encoded.is_empty() {
+        return Err("Windows H.264 encoder returned an empty access-unit batch".to_owned());
+    }
     let mut previous_timestamp = None;
-    let mut access_units = Vec::with_capacity(batch.access_units.len());
-    for unit in batch.access_units {
+    let mut access_units = Vec::with_capacity(encoded.len());
+    for unit in encoded {
         if unit.bytes.is_empty() {
             return Err("Windows H.264 encoder returned an empty access unit".to_owned());
         }
@@ -270,7 +337,7 @@ fn convert_h264_batch(batch: media_foundation::H264EncodeBatch) -> Result<H264St
         });
     }
     Ok(H264StreamBatch {
-        encoder_name: batch.encoder_name,
+        encoder_name,
         access_units,
     })
 }
@@ -738,7 +805,11 @@ fn wrap_capture_device(
     let runtime = inspectable
         .cast::<IDirect3DDevice>()
         .map_err(|error| format!("failed to query WinRT IDirect3DDevice: {error}"))?;
-    Ok(CaptureDevice { runtime, backend })
+    Ok(CaptureDevice {
+        native: native_device.clone(),
+        runtime,
+        backend,
+    })
 }
 
 fn observe_frame(frame_pool: &Direct3D11CaptureFramePool) -> Result<FrameObservation, String> {
@@ -965,8 +1036,9 @@ mod tests {
     };
 
     use super::{
-        H264StreamConfig, SyntheticH264Stream, collect_status, enumerate_display_sources,
-        null_terminated_utf16, positive_dimension, probe_screen_capture, validate_probe_fps,
+        CapturedH264Stream, H264StreamConfig, SyntheticH264Stream, collect_status,
+        enumerate_display_sources, null_terminated_utf16, positive_dimension, probe_screen_capture,
+        validate_probe_fps,
     };
 
     #[test]
@@ -1077,5 +1149,38 @@ mod tests {
             );
             drop(stream);
         }
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop and a physical H.264 encoder"]
+    fn native_capture_stream_produces_gpu_encoded_h264() {
+        let stream = CapturedH264Stream::start(
+            H264StreamConfig::new(1_280, 720, 30, 8_000).expect("valid stream config"),
+            None,
+        )
+        .expect("start native capture/H.264 worker");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut access_units = 0_usize;
+        let mut keyframes = 0_usize;
+        while access_units < 10 {
+            if let Some(batch) = stream
+                .try_next_batch()
+                .expect("native capture/H.264 worker remains healthy")
+            {
+                access_units += batch.access_units.len();
+                keyframes += batch
+                    .access_units
+                    .iter()
+                    .filter(|unit| unit.keyframe)
+                    .count();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "native capture/H.264 worker timed out after {access_units} units"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        eprintln!("captured {access_units} H.264 access units with {keyframes} keyframe(s)");
+        assert!(keyframes > 0);
     }
 }

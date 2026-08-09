@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::host_protocol::{HostProtocolConfig, negotiate_host_transport, send_control_payload};
 use crate::platform::{
-    H264AccessUnit, H264StreamConfig, PlatformStatus, SyntheticH264Stream, UsbAccessoryManager,
+    CapturedH264Stream, H264AccessUnit, H264StreamConfig, PlatformStatus, UsbAccessoryManager,
     UsbAccessoryProbeReport, collect_status,
 };
 
@@ -409,7 +409,7 @@ fn run_usb_control_session_inner(
     shared: &Arc<Mutex<SharedState>>,
     cancel: &AtomicBool,
     config: LoopbackConfig,
-    transport: &mut UsbAccessoryManager,
+    transport: &mut impl PacketTransport,
 ) -> Result<(), String> {
     let protocol_config = HostProtocolConfig::new(config.width, config.height, config.fps)?;
     let established =
@@ -443,7 +443,7 @@ fn run_usb_control_session_inner(
         negotiated_config.fps,
         established.display_config.bitrate_kbps(),
     )?;
-    let video_stream = SyntheticH264Stream::start(stream_config)?;
+    let video_stream = CapturedH264Stream::start(stream_config, None)?;
     let mut access_units = VecDeque::<H264AccessUnit>::new();
     let mut media_clock_offset = None::<Duration>;
     let mut encoder_name = None::<String>;
@@ -954,14 +954,17 @@ fn duration_micros_u32(duration: Duration) -> Result<u32, String> {
 mod tests {
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex, atomic::AtomicBool},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
         thread,
         time::{Duration, Instant},
     };
 
     use ladoflow_protocol::{
-        DecodeOutcome, Frame as WireFrame, FrameFlags, Ping, Pong, StageTimings, Telemetry,
-        ThermalState, VideoFrame,
+        Capabilities, CodecSet, DecodeOutcome, FeatureFlags, Frame as WireFrame, FrameFlags, Hello,
+        InputCapabilities, Ping, Pong, Role, StageTimings, Telemetry, ThermalState, VideoFrame,
     };
     use ladoflow_transport::{
         Channel, LoopbackConfig as TransportConfig, Packet, PacketTransport, loopback_pair,
@@ -970,7 +973,7 @@ mod tests {
     use super::{
         DesktopRuntime, H264AccessUnit, LoopbackConfig, SessionPhaseView, SharedState,
         align_media_clock, apply_usb_telemetry, handle_usb_control, negotiated_session,
-        send_usb_h264_access_unit,
+        run_usb_control_session_inner, send_usb_h264_access_unit,
     };
 
     #[test]
@@ -1148,5 +1151,132 @@ mod tests {
             .expect_err("replayed sequence is rejected")
             .contains("duplicate or stale")
         );
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop and a physical H.264 encoder"]
+    #[allow(clippy::too_many_lines)]
+    fn native_capture_reaches_a_protocol_display_end_to_end() {
+        let (mut host, mut display) = loopback_pair(TransportConfig::default());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let display_cancel = Arc::clone(&cancel);
+        let display_worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut initial_control = 0;
+            while initial_control < 2 {
+                if display
+                    .try_receive(Channel::Control)
+                    .expect("display control queue remains connected")
+                    .is_some()
+                {
+                    initial_control += 1;
+                } else {
+                    assert!(Instant::now() < deadline, "host handshake timed out");
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+            let hello = Hello::new(1, 1, Role::Display, [0x44; 16], "LadoFlow test display")
+                .expect("valid display Hello");
+            let capabilities = Capabilities::new(
+                1_280,
+                720,
+                30_000,
+                20_000,
+                CodecSet::H264,
+                InputCapabilities::POINTER | InputCapabilities::TOUCH,
+                FeatureFlags::DYNAMIC_ROTATION,
+            )
+            .expect("valid display capabilities");
+            for (sequence, payload) in [
+                (
+                    0,
+                    WireFrame::from_payload(FrameFlags::NONE, 0, &hello)
+                        .expect("display Hello frame"),
+                ),
+                (
+                    1,
+                    WireFrame::from_payload(FrameFlags::NONE, 1, &capabilities)
+                        .expect("display capabilities frame"),
+                ),
+            ] {
+                assert_eq!(payload.header().sequence(), sequence);
+                display
+                    .try_send(Packet::control(payload.encode()))
+                    .expect("send display handshake frame");
+            }
+
+            let mut configured = false;
+            let mut media_frames = 0_usize;
+            let mut keyframes = 0_usize;
+            while media_frames < 10 {
+                if let Some(packet) = display
+                    .try_receive(Channel::Control)
+                    .expect("display control queue remains connected")
+                {
+                    let DecodeOutcome::Complete { frame, consumed } =
+                        WireFrame::decode_prefix(packet.payload()).expect("valid host control")
+                    else {
+                        panic!("complete host control expected");
+                    };
+                    assert_eq!(consumed, packet.len());
+                    if frame.header().kind() == ladoflow_protocol::MessageType::DisplayConfig {
+                        configured = true;
+                    }
+                }
+                if let Some(packet) = display
+                    .try_receive(Channel::Media)
+                    .expect("display media queue remains connected")
+                {
+                    assert!(configured, "media arrived before DisplayConfig");
+                    let DecodeOutcome::Complete { frame, consumed } =
+                        WireFrame::decode_prefix(packet.payload()).expect("valid host media")
+                    else {
+                        panic!("complete host media expected");
+                    };
+                    assert_eq!(consumed, packet.len());
+                    let video = frame
+                        .decode_payload::<VideoFrame>()
+                        .expect("valid H.264 VideoFrame");
+                    assert_eq!(video.metadata().frame_id(), frame.header().sequence());
+                    assert!(
+                        video
+                            .encoded_bytes()
+                            .windows(3)
+                            .any(|bytes| bytes == [0, 0, 1])
+                    );
+                    keyframes += usize::from(frame.header().flags().contains(FrameFlags::KEYFRAME));
+                    media_frames += 1;
+                }
+                assert!(Instant::now() < deadline, "media stream timed out");
+                thread::sleep(Duration::from_millis(1));
+            }
+            display_cancel.store(true, Ordering::Release);
+            (media_frames, keyframes)
+        });
+
+        let shared = Arc::new(Mutex::new(SharedState::new()));
+        shared
+            .lock()
+            .expect("shared state")
+            .reset_for_usb_negotiation(LoopbackConfig {
+                width: 1_280,
+                height: 720,
+                fps: 30,
+            });
+        run_usb_control_session_inner(
+            &shared,
+            &cancel,
+            LoopbackConfig {
+                width: 1_280,
+                height: 720,
+                fps: 30,
+            },
+            &mut host,
+        )
+        .expect("native capture reaches protocol display");
+        let (media_frames, keyframes) = display_worker.join().expect("display worker");
+        assert_eq!(media_frames, 10);
+        assert!(keyframes > 0);
+        assert!(shared.lock().expect("shared state").frames_produced >= 10);
     }
 }

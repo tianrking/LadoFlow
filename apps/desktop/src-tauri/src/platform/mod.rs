@@ -162,25 +162,25 @@ pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    SyntheticH264Stream, UsbAccessoryManager, collect_status, probe_screen_capture,
+    CapturedH264Stream, UsbAccessoryManager, collect_status, probe_screen_capture,
     request_capture_access,
 };
 
 #[cfg(not(target_os = "windows"))]
-pub struct SyntheticH264Stream;
+pub struct CapturedH264Stream;
 
 #[cfg(not(target_os = "windows"))]
-impl SyntheticH264Stream {
-    pub fn start(_config: H264StreamConfig) -> Result<Self, String> {
+impl CapturedH264Stream {
+    pub fn start(_config: H264StreamConfig, _display_id: Option<String>) -> Result<Self, String> {
         Err(format!(
-            "synthetic hardware H.264 streaming is not implemented for {}",
+            "native capture/H.264 streaming is not implemented for {}",
             std::env::consts::OS
         ))
     }
 
     pub fn try_next_batch(&self) -> Result<Option<H264StreamBatch>, String> {
         Err(format!(
-            "synthetic hardware H.264 streaming is not implemented for {}",
+            "native capture/H.264 streaming is not implemented for {}",
             std::env::consts::OS
         ))
     }
