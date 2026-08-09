@@ -24,7 +24,7 @@ namespace
 {
     using namespace LadoFlow::Idd;
 
-    constexpr std::array<DisplayMode, 10> kDisplayModes{{
+    constexpr std::array<DisplayMode, 18> kDisplayModes{{
         {1920, 1080, 60},
         {2732, 2048, 60},
         {2560, 1600, 60},
@@ -35,6 +35,14 @@ namespace
         {1366,  768, 60},
         {1280,  800, 60},
         {1280,  720, 60},
+        {1024,  768, 60},
+        {1024,  640, 60},
+        { 960,  600, 60},
+        { 960,  540, 60},
+        { 800,  600, 60},
+        { 800,  500, 60},
+        { 640,  480, 60},
+        { 640,  400, 60},
     }};
 
     // Stable identity for the one logical LadoFlow panel. It prevents Windows

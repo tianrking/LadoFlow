@@ -224,8 +224,19 @@ pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 #[cfg(target_os = "windows")]
 pub use windows::{
     CapturedH264Stream, NativeInputController, UsbAccessoryManager, collect_status,
-    disable_virtual_display, enable_virtual_display, probe_screen_capture, request_capture_access,
+    disable_virtual_display, enable_virtual_display, prepare_capture_display_mode,
+    probe_screen_capture, request_capture_access,
 };
+
+#[cfg(not(target_os = "windows"))]
+#[allow(clippy::unnecessary_wraps)]
+pub fn prepare_capture_display_mode(
+    _display_id: Option<&str>,
+    _width: u16,
+    _height: u16,
+) -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(not(target_os = "windows"))]
 pub struct CapturedH264Stream;

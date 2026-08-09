@@ -66,7 +66,8 @@ path; it is not automatically a release claim.
 - [x] LocalSystem software-device owner plus unprivileged JSON start/status/stop client
 - [x] Versioned fixed-size IPC, explicit DACL, remote-client rejection, and SCM PID verification
 - [x] Universal API/INF validation and test-signed development catalog build
-- [ ] Runtime mode/rotation negotiation with the connected mobile display
+- [x] Runtime resolution negotiation plus identity-gated Windows active-mode alignment
+- [ ] Runtime orientation/rotation negotiation with the connected mobile display
 - [ ] Trusted install plus sleep/wake, crash, GPU-reset, and rollback recovery
 - [x] Automatic Tauri lifecycle and virtual-monitor selection integration
 - [x] Per-machine NSIS hooks and hash-verified native setup-helper dry-run/build validation

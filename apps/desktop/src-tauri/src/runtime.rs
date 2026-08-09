@@ -32,7 +32,7 @@ use crate::host_protocol::{
 };
 use crate::platform::{
     CapturedH264Stream, H264AccessUnit, H264StreamConfig, NativeInputController, PlatformStatus,
-    UsbAccessoryManager, UsbAccessoryProbeReport, collect_status,
+    UsbAccessoryManager, UsbAccessoryProbeReport, collect_status, prepare_capture_display_mode,
 };
 
 const LATENCY_WINDOW: NonZeroUsize = NonZeroUsize::new(240).expect("240 is non-zero");
@@ -557,6 +557,11 @@ fn run_usb_control_session_inner(
     let established =
         negotiate_host_transport(transport, protocol_config, cancel, USB_NEGOTIATION_TIMEOUT)?;
     let (negotiated_config, input_capabilities) = negotiated_runtime_parameters(&established)?;
+    let video_stream = start_negotiated_capture_stream(
+        display_id,
+        negotiated_config,
+        established.display_config.bitrate_kbps(),
+    )?;
     let mut next_sequence = established.next_sequence;
     {
         let mut state = lock_arc(shared);
@@ -568,13 +573,6 @@ fn run_usb_control_session_inner(
     }
 
     let clock_origin = Instant::now();
-    let stream_config = H264StreamConfig::new(
-        negotiated_config.width,
-        negotiated_config.height,
-        negotiated_config.fps,
-        established.display_config.bitrate_kbps(),
-    )?;
-    let video_stream = CapturedH264Stream::start(stream_config, display_id.map(ToOwned::to_owned))?;
     let mut input = NativeInputController::new(
         display_id,
         negotiated_config.width,
@@ -657,6 +655,17 @@ fn run_usb_control_session_inner(
         }
     }
     Ok(())
+}
+
+fn start_negotiated_capture_stream(
+    display_id: Option<&str>,
+    config: LoopbackConfig,
+    bitrate_kbps: u32,
+) -> Result<CapturedH264Stream, String> {
+    prepare_capture_display_mode(display_id, config.width, config.height)?;
+    let stream_config =
+        H264StreamConfig::new(config.width, config.height, config.fps, bitrate_kbps)?;
+    CapturedH264Stream::start(stream_config, display_id.map(ToOwned::to_owned))
 }
 
 fn negotiated_runtime_parameters(
@@ -941,7 +950,7 @@ fn negotiated_session(config: LoopbackConfig) -> Result<Session, String> {
         40_000,
         CodecSet::H264 | CodecSet::HEVC,
         InputCapabilities::POINTER | InputCapabilities::TOUCH | InputCapabilities::KEYBOARD,
-        FeatureFlags::DYNAMIC_ROTATION | FeatureFlags::REMOTE_CURSOR,
+        FeatureFlags::REMOTE_CURSOR,
     )
     .map_err(|error| error.to_string())?;
     let display_capabilities = Capabilities::new(
@@ -951,7 +960,7 @@ fn negotiated_session(config: LoopbackConfig) -> Result<Session, String> {
         20_000,
         CodecSet::H264,
         InputCapabilities::POINTER | InputCapabilities::TOUCH,
-        FeatureFlags::DYNAMIC_ROTATION | FeatureFlags::REMOTE_CURSOR,
+        FeatureFlags::REMOTE_CURSOR,
     )
     .map_err(|error| error.to_string())?;
     let agreement = negotiate(

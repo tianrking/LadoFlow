@@ -190,9 +190,20 @@ has build-time self-tests and non-mutating plans, but its administrator path has
 not yet run on a trusted clean test host. The remaining host and installation
 work must cover:
 
-- supported modes and active mode;
 - frame/surface handoff or encoded-stream handoff;
 - health, backpressure, restart, and fatal-error events.
+
+Once LDFL returns a `DisplayConfig`, the desktop resolves the selected monitor
+back to its Win32 `\\.\DISPLAYn` name. Only an identity-verified LadoFlow
+virtual monitor is eligible for a mode change. The host enumerates an exact
+60 Hz `DEVMODE`, validates it with `CDS_TEST`, applies it to the live desktop
+without `CDS_UPDATEREGISTRY`, waits up to five seconds for monitor
+re-enumeration, and starts WGC only after the requested geometry is observable.
+The 30 Hz video option keeps the virtual desktop at 60 Hz and paces encoding at
+30 Hz. Physical-monitor selections are always a no-op. This path has compile
+and unit-test evidence only until it runs with the driver installed on a
+controlled host. Runtime orientation/rotation control remains separate work;
+the host therefore does not advertise the `DYNAMIC_ROTATION` feature yet.
 
 Driver crashes, upgrades, rollback, and uninstall must not corrupt desktop-app
 state. The build produces a validated test-signed development catalog but does

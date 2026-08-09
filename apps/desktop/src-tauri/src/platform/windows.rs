@@ -35,8 +35,14 @@ use ::windows::{
             },
             Dxgi::{IDXGIAdapter, IDXGIDevice},
             Gdi::{
-                DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC,
-                HMONITOR, MONITORINFO, MONITORINFOEXW,
+                CDS_TEST, CDS_TYPE, ChangeDisplaySettingsExW, DEVMODEW, DISP_CHANGE,
+                DISP_CHANGE_BADDUALVIEW, DISP_CHANGE_BADFLAGS, DISP_CHANGE_BADMODE,
+                DISP_CHANGE_BADPARAM, DISP_CHANGE_FAILED, DISP_CHANGE_NOTUPDATED,
+                DISP_CHANGE_RESTART, DISP_CHANGE_SUCCESSFUL, DISPLAY_DEVICEW, DM_DISPLAYFREQUENCY,
+                DM_PELSHEIGHT, DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_FLAGS,
+                ENUM_DISPLAY_SETTINGS_MODE, EnumDisplayDevicesW, EnumDisplayMonitors,
+                EnumDisplaySettingsExW, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+                MONITORINFOEXW,
             },
         },
         System::WinRT::{
@@ -71,6 +77,11 @@ const CAPTURE_PROBE_DURATION: Duration = Duration::from_millis(750);
 const CAPTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CAPTURE_BUFFER_COUNT: i32 = 3;
 const CAPTURE_PIXEL_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
+const DISPLAY_MODE_APPLY_TIMEOUT: Duration = Duration::from_secs(5);
+const DISPLAY_MODE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_ENUMERATED_DISPLAY_MODES: u32 = 4_096;
+const MAX_REPORTED_DISPLAY_MODES: usize = 24;
+const VIRTUAL_DISPLAY_REFRESH_HZ: u32 = 60;
 
 #[derive(Default)]
 struct EnumerationContext {
@@ -81,7 +92,15 @@ struct EnumerationContext {
 struct MonitorSource {
     handle: HMONITOR,
     rect: RECT,
+    device_name: String,
     display: DisplaySource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayMode {
+    width: u32,
+    height: u32,
+    refresh_hz: u32,
 }
 
 #[derive(Debug, Default)]
@@ -554,6 +573,291 @@ pub fn probe_screen_capture(
 ) -> Result<CaptureProbeReport, String> {
     validate_probe_fps(fps)?;
     capture_worker()?.probe(display_id, fps)
+}
+
+/// Align the owned `LadoFlow` virtual monitor with the negotiated stream size.
+///
+/// This is intentionally a no-op for physical monitors and for sessions that
+/// did not select an explicit display. The guard prevents a display session
+/// from ever changing an unrelated monitor's desktop mode.
+pub fn prepare_capture_display_mode(
+    display_id: Option<&str>,
+    width: u16,
+    height: u16,
+) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("negotiated Windows display dimensions must be non-zero".to_owned());
+    }
+
+    let monitors = enumerate_monitors()?;
+    let Some(target) = alignment_target(&monitors, display_id)? else {
+        return Ok(());
+    };
+    let device_name = target.device_name.clone();
+    let display_id = target.display.id.clone();
+
+    let current = query_current_display_mode(&device_name)?;
+    if current.width == u32::from(width)
+        && current.height == u32::from(height)
+        && current.refresh_hz == VIRTUAL_DISPLAY_REFRESH_HZ
+    {
+        return Ok(());
+    }
+
+    let available = enumerate_display_modes(&device_name)?;
+    let requested = select_exact_display_mode(
+        &available,
+        u32::from(width),
+        u32::from(height),
+        VIRTUAL_DISPLAY_REFRESH_HZ,
+    )
+    .ok_or_else(|| {
+        format!(
+            "LadoFlow virtual display does not advertise {width}x{height}@{VIRTUAL_DISPLAY_REFRESH_HZ} Hz; available modes: {}",
+            format_display_modes(&available)
+        )
+    })?;
+
+    apply_display_mode(&device_name, requested)?;
+    wait_for_display_mode(&display_id, requested, DISPLAY_MODE_APPLY_TIMEOUT)
+}
+
+fn alignment_target<'a>(
+    monitors: &'a [MonitorSource],
+    display_id: Option<&str>,
+) -> Result<Option<&'a MonitorSource>, String> {
+    let Some(display_id) = display_id else {
+        return Ok(None);
+    };
+    let monitor = select_monitor(monitors, Some(display_id))?;
+    if !monitor.display.virtual_display {
+        return Ok(None);
+    }
+    if monitor.device_name.is_empty() {
+        return Err("LadoFlow virtual display has no Win32 device name".to_owned());
+    }
+    Ok(Some(monitor))
+}
+
+fn query_current_display_mode(device_name: &str) -> Result<DisplayMode, String> {
+    query_current_native_display_mode(device_name).map(|mode| display_mode_from_native(&mode))
+}
+
+fn query_current_native_display_mode(device_name: &str) -> Result<DEVMODEW, String> {
+    let wide_name = null_terminated_wide(device_name);
+    let mut mode = initialized_display_mode();
+    // SAFETY: `wide_name` is NUL-terminated and remains live for this call;
+    // `mode` is initialized with the required `dmSize` writable contract.
+    let succeeded = unsafe {
+        EnumDisplaySettingsExW(
+            PCWSTR(wide_name.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &raw mut mode,
+            ENUM_DISPLAY_SETTINGS_FLAGS(0),
+        )
+    };
+    if !succeeded.as_bool() {
+        return Err(format!(
+            "EnumDisplaySettingsExW could not read the current mode for {device_name}"
+        ));
+    }
+    Ok(mode)
+}
+
+fn enumerate_display_modes(device_name: &str) -> Result<Vec<DisplayMode>, String> {
+    let wide_name = null_terminated_wide(device_name);
+    let mut modes = Vec::new();
+    let mut enumeration_complete = false;
+    for index in 0_u32..MAX_ENUMERATED_DISPLAY_MODES {
+        let mut mode = initialized_display_mode();
+        // SAFETY: `wide_name` is NUL-terminated and remains live for this call;
+        // `mode` is initialized with the required `dmSize` writable contract.
+        let succeeded = unsafe {
+            EnumDisplaySettingsExW(
+                PCWSTR(wide_name.as_ptr()),
+                ENUM_DISPLAY_SETTINGS_MODE(index),
+                &raw mut mode,
+                ENUM_DISPLAY_SETTINGS_FLAGS(0),
+            )
+        };
+        if !succeeded.as_bool() {
+            enumeration_complete = true;
+            break;
+        }
+        modes.push(display_mode_from_native(&mode));
+    }
+    if !enumeration_complete {
+        return Err(format!(
+            "Windows display-mode enumeration for {device_name} exceeded the {MAX_ENUMERATED_DISPLAY_MODES}-entry safety bound"
+        ));
+    }
+    modes.sort_unstable_by_key(|mode| (mode.width, mode.height, mode.refresh_hz));
+    modes.dedup();
+    if modes.is_empty() {
+        Err(format!(
+            "Windows reported no display modes for LadoFlow device {device_name}"
+        ))
+    } else {
+        Ok(modes)
+    }
+}
+
+fn initialized_display_mode() -> DEVMODEW {
+    DEVMODEW {
+        dmSize: u16::try_from(size_of::<DEVMODEW>()).expect("DEVMODEW size fits in a Win32 WORD"),
+        ..Default::default()
+    }
+}
+
+const fn display_mode_from_native(mode: &DEVMODEW) -> DisplayMode {
+    DisplayMode {
+        width: mode.dmPelsWidth,
+        height: mode.dmPelsHeight,
+        refresh_hz: mode.dmDisplayFrequency,
+    }
+}
+
+fn select_exact_display_mode(
+    modes: &[DisplayMode],
+    width: u32,
+    height: u32,
+    refresh_hz: u32,
+) -> Option<DisplayMode> {
+    modes
+        .iter()
+        .copied()
+        .find(|mode| mode.width == width && mode.height == height && mode.refresh_hz == refresh_hz)
+}
+
+fn apply_display_mode(device_name: &str, requested: DisplayMode) -> Result<(), String> {
+    let wide_name = null_terminated_wide(device_name);
+    // Microsoft requires a DEVMODE populated by EnumDisplaySettingsEx. Start
+    // from the current device-owned structure, then opt in only the three
+    // fields this session is allowed to change; position and orientation stay
+    // outside `dmFields`.
+    let mut mode = query_current_native_display_mode(device_name)?;
+    mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+    mode.dmPelsWidth = requested.width;
+    mode.dmPelsHeight = requested.height;
+    mode.dmDisplayFrequency = requested.refresh_hz;
+
+    // `CDS_TEST` validates the exact mode without mutating the desktop.
+    // SAFETY: pointers reference initialized values that outlive each call.
+    let test_result = unsafe {
+        ChangeDisplaySettingsExW(
+            PCWSTR(wide_name.as_ptr()),
+            Some(std::ptr::from_ref(&mode)),
+            None,
+            CDS_TEST,
+            None,
+        )
+    };
+    ensure_display_change_success("validate", test_result)?;
+
+    // Flags zero applies only to the live desktop. We deliberately do not use
+    // `CDS_UPDATEREGISTRY`, so a session cannot persist a mode into the user's
+    // display profile.
+    // SAFETY: pointers reference initialized values that outlive this call.
+    let apply_result = unsafe {
+        ChangeDisplaySettingsExW(
+            PCWSTR(wide_name.as_ptr()),
+            Some(std::ptr::from_ref(&mode)),
+            None,
+            CDS_TYPE(0),
+            None,
+        )
+    };
+    ensure_display_change_success("apply", apply_result)
+}
+
+fn ensure_display_change_success(operation: &str, result: DISP_CHANGE) -> Result<(), String> {
+    if result == DISP_CHANGE_SUCCESSFUL {
+        return Ok(());
+    }
+    let reason = if result == DISP_CHANGE_BADDUALVIEW {
+        "dual-view configuration rejected"
+    } else if result == DISP_CHANGE_BADFLAGS {
+        "invalid mode-switch flags"
+    } else if result == DISP_CHANGE_BADMODE {
+        "display mode is not supported"
+    } else if result == DISP_CHANGE_BADPARAM {
+        "invalid display-mode parameter"
+    } else if result == DISP_CHANGE_FAILED {
+        "display driver rejected the request"
+    } else if result == DISP_CHANGE_NOTUPDATED {
+        "display profile could not be updated"
+    } else if result == DISP_CHANGE_RESTART {
+        "Windows requires a restart for this mode"
+    } else {
+        "unknown display-mode error"
+    };
+    Err(format!(
+        "failed to {operation} LadoFlow virtual display mode: {reason} (DISP_CHANGE {})",
+        result.0
+    ))
+}
+
+fn wait_for_display_mode(
+    display_id: &str,
+    requested: DisplayMode,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let last_observation = match enumerate_monitors().and_then(|monitors| {
+            let monitor = select_monitor(&monitors, Some(display_id))?;
+            Ok((
+                monitor.display.width,
+                monitor.display.height,
+                monitor.device_name.clone(),
+            ))
+        }) {
+            Ok((width, height, device_name)) => match query_current_display_mode(&device_name) {
+                Ok(current)
+                    if width == u64::from(requested.width)
+                        && height == u64::from(requested.height)
+                        && current.refresh_hz == requested.refresh_hz
+                        && current.width == requested.width
+                        && current.height == requested.height =>
+                {
+                    return Ok(());
+                }
+                Ok(current) => format!(
+                    "observed {width}x{height} geometry and {}x{}@{} Hz current mode",
+                    current.width, current.height, current.refresh_hz
+                ),
+                Err(error) => error,
+            },
+            Err(error) => error,
+        };
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "LadoFlow virtual display did not reach {}x{}@{} Hz within {} seconds ({last_observation})",
+                requested.width,
+                requested.height,
+                requested.refresh_hz,
+                timeout.as_secs()
+            ));
+        }
+        thread::sleep(DISPLAY_MODE_POLL_INTERVAL);
+    }
+}
+
+fn format_display_modes(modes: &[DisplayMode]) -> String {
+    let mut formatted = modes
+        .iter()
+        .take(MAX_REPORTED_DISPLAY_MODES)
+        .map(|mode| format!("{}x{}@{}", mode.width, mode.height, mode.refresh_hz))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if modes.len() > MAX_REPORTED_DISPLAY_MODES {
+        let _ = write!(
+            formatted,
+            ", ... ({} more)",
+            modes.len() - MAX_REPORTED_DISPLAY_MODES
+        );
+    }
+    formatted
 }
 
 fn probe_screen_capture_on_worker(
@@ -1108,6 +1412,7 @@ unsafe extern "system" fn enumerate_monitor(
     context.monitors.push(MonitorSource {
         handle: monitor,
         rect: info.monitorInfo.rcMonitor,
+        device_name: device_path,
         display: DisplaySource {
             id,
             name,
@@ -1128,6 +1433,10 @@ fn null_terminated_utf16(buffer: &[u16]) -> String {
     String::from_utf16_lossy(&buffer[..end])
 }
 
+fn null_terminated_wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1136,11 +1445,35 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::{
-        CapturedH264Stream, H264StreamConfig, SyntheticH264Stream, collect_status,
-        enumerate_display_sources, is_ladoflow_virtual_identity, null_terminated_utf16,
-        positive_dimension, probe_screen_capture, validate_probe_fps,
+    use ::windows::Win32::{
+        Foundation::RECT,
+        Graphics::Gdi::{DISP_CHANGE_BADMODE, DISP_CHANGE_SUCCESSFUL, HMONITOR},
     };
+
+    use crate::platform::DisplaySource;
+
+    use super::{
+        CapturedH264Stream, DisplayMode, H264StreamConfig, MonitorSource, SyntheticH264Stream,
+        alignment_target, collect_status, ensure_display_change_success, enumerate_display_sources,
+        is_ladoflow_virtual_identity, null_terminated_utf16, positive_dimension,
+        probe_screen_capture, select_exact_display_mode, validate_probe_fps,
+    };
+
+    fn monitor_source(id: &str, virtual_display: bool) -> MonitorSource {
+        MonitorSource {
+            handle: HMONITOR::default(),
+            rect: RECT::default(),
+            device_name: format!(r"\\.\DISPLAY{id}"),
+            display: DisplaySource {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                width: 1_920,
+                height: 1_080,
+                primary: !virtual_display,
+                virtual_display,
+            },
+        }
+    }
 
     #[test]
     fn utf16_device_names_stop_at_the_first_null() {
@@ -1182,6 +1515,60 @@ mod tests {
             "Intel(R) UHD Graphics".to_owned(),
             "MONITOR\\Generic_PnP_Monitor".to_owned(),
         ]));
+    }
+
+    #[test]
+    fn display_mode_alignment_is_gated_to_the_owned_virtual_monitor() {
+        let monitors = [
+            monitor_source("physical", false),
+            monitor_source("ladoflow:panel", true),
+        ];
+        assert!(
+            alignment_target(&monitors, None)
+                .expect("no selection is safe")
+                .is_none()
+        );
+        assert!(
+            alignment_target(&monitors, Some("physical"))
+                .expect("physical selection is safe")
+                .is_none()
+        );
+        assert_eq!(
+            alignment_target(&monitors, Some("ladoflow:panel"))
+                .expect("virtual selection")
+                .expect("virtual target")
+                .display
+                .id,
+            "ladoflow:panel"
+        );
+        assert!(alignment_target(&monitors, Some("missing")).is_err());
+    }
+
+    #[test]
+    fn exact_virtual_mode_selection_requires_resolution_and_refresh() {
+        let modes = [
+            DisplayMode {
+                width: 1_920,
+                height: 1_080,
+                refresh_hz: 30,
+            },
+            DisplayMode {
+                width: 1_920,
+                height: 1_080,
+                refresh_hz: 60,
+            },
+        ];
+        assert_eq!(
+            select_exact_display_mode(&modes, 1_920, 1_080, 60),
+            Some(modes[1])
+        );
+        assert!(select_exact_display_mode(&modes, 2_560, 1_440, 60).is_none());
+        assert!(ensure_display_change_success("test", DISP_CHANGE_SUCCESSFUL).is_ok());
+        assert!(
+            ensure_display_change_success("test", DISP_CHANGE_BADMODE)
+                .expect_err("bad mode is reported")
+                .contains("not supported")
+        );
     }
 
     #[test]

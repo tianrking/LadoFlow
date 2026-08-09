@@ -24,6 +24,30 @@ const DISPLAY_CONFIG_SEQUENCE: u64 = 2;
 pub const FIRST_ACTIVE_SEQUENCE: u64 = 3;
 const CONTROL_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 
+// Keep this ladder in sync with the Windows IddCx mode table. When a display
+// cannot decode the user's requested size, selecting one complete mode avoids
+// independently clamping width and height into a distorted aspect ratio.
+const NEGOTIATED_LANDSCAPE_MODES: &[(u16, u16)] = &[
+    (2_732, 2_048),
+    (2_560, 1_600),
+    (2_560, 1_440),
+    (2_048, 1_536),
+    (1_920, 1_200),
+    (1_920, 1_080),
+    (1_600, 1_200),
+    (1_366, 768),
+    (1_280, 800),
+    (1_280, 720),
+    (1_024, 768),
+    (1_024, 640),
+    (960, 600),
+    (960, 540),
+    (800, 600),
+    (800, 500),
+    (640, 480),
+    (640, 400),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostProtocolConfig {
     width: u16,
@@ -89,7 +113,9 @@ impl HostHandshake {
             40_000,
             CodecSet::H264,
             InputCapabilities::POINTER | InputCapabilities::TOUCH | InputCapabilities::KEYBOARD,
-            FeatureFlags::DYNAMIC_ROTATION | FeatureFlags::REMOTE_CURSOR,
+            // Rotation control has no LDFL payload yet, so do not negotiate it
+            // until both host mode changes and display orientation are wired.
+            FeatureFlags::REMOTE_CURSOR,
         )
         .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -301,8 +327,12 @@ fn select_display_config(
     if capabilities.codec_bits() & CodecSet::H264.bits() == 0 {
         return Err("the display did not negotiate H.264 support".to_owned());
     }
-    let width = requested.width.min(capabilities.max_width());
-    let height = requested.height.min(capabilities.max_height());
+    let (width, height) = select_bounded_display_dimensions(
+        requested.width,
+        requested.height,
+        capabilities.max_width(),
+        capabilities.max_height(),
+    )?;
     let requested_refresh = u32::from(requested.refresh_hz) * 1_000;
     let refresh_millihz = if capabilities.max_refresh_millihz() >= requested_refresh {
         requested_refresh
@@ -325,6 +355,58 @@ fn select_display_config(
         CodecProfile::H264Main,
     )
     .map_err(|error| error.to_string())
+}
+
+fn select_bounded_display_dimensions(
+    requested_width: u16,
+    requested_height: u16,
+    max_width: u16,
+    max_height: u16,
+) -> Result<(u16, u16), String> {
+    if requested_width <= max_width && requested_height <= max_height {
+        return Ok((requested_width, requested_height));
+    }
+
+    let requested_landscape = requested_width >= requested_height;
+    NEGOTIATED_LANDSCAPE_MODES
+        .iter()
+        .copied()
+        .filter(|&(width, height)| {
+            (width >= height) == requested_landscape
+                && width <= requested_width
+                && height <= requested_height
+                && width <= max_width
+                && height <= max_height
+        })
+        .min_by(|left, right| compare_mode_fit(*left, *right, requested_width, requested_height))
+        .ok_or_else(|| {
+            format!(
+                "display maximum {max_width}x{max_height} cannot fit a supported mode for the requested {requested_width}x{requested_height} session"
+            )
+        })
+}
+
+fn compare_mode_fit(
+    left: (u16, u16),
+    right: (u16, u16),
+    requested_width: u16,
+    requested_height: u16,
+) -> std::cmp::Ordering {
+    let aspect_delta = |(width, height): (u16, u16)| {
+        (u64::from(width) * u64::from(requested_height))
+            .abs_diff(u64::from(requested_width) * u64::from(height))
+    };
+    let left_delta = aspect_delta(left);
+    let right_delta = aspect_delta(right);
+    // Compare delta/height without floating-point rounding. When two modes
+    // preserve the aspect equally well, retain the higher-resolution one.
+    (left_delta * u64::from(right.1))
+        .cmp(&(right_delta * u64::from(left.1)))
+        .then_with(|| {
+            let left_area = u64::from(left.0) * u64::from(left.1);
+            let right_area = u64::from(right.0) * u64::from(right.1);
+            right_area.cmp(&left_area)
+        })
 }
 
 fn target_h264_bitrate(width: u16, height: u16, refresh_millihz: u32) -> u32 {
@@ -355,6 +437,7 @@ mod tests {
     use super::{
         CAPABILITIES_SEQUENCE, DISPLAY_CONFIG_SEQUENCE, FIRST_ACTIVE_SEQUENCE, HELLO_SEQUENCE,
         HostHandshake, HostProtocolConfig, control_packet, negotiate_host_transport,
+        select_bounded_display_dimensions,
     };
 
     fn display_hello(role: Role) -> Hello {
@@ -405,6 +488,10 @@ mod tests {
             capabilities_frame.header().sequence(),
             CAPABILITIES_SEQUENCE
         );
+        assert_eq!(
+            handshake.host_capabilities.features(),
+            FeatureFlags::REMOTE_CURSOR
+        );
 
         assert!(
             handshake
@@ -422,9 +509,35 @@ mod tests {
 
         assert_eq!(established.peer_name, "LadoFlow Android");
         assert_eq!(established.display_config.width(), 1_280);
-        assert_eq!(established.display_config.height(), 800);
-        assert_eq!(established.display_config.bitrate_kbps(), 7_372);
+        assert_eq!(established.display_config.height(), 720);
+        assert_eq!(established.display_config.bitrate_kbps(), 6_635);
         assert_eq!(established.next_sequence, FIRST_ACTIVE_SEQUENCE);
+    }
+
+    #[test]
+    fn bounded_mode_selection_preserves_aspect_ratio() {
+        assert_eq!(
+            select_bounded_display_dimensions(2_732, 2_048, 1_920, 1_920).expect("4:3 fallback"),
+            (1_600, 1_200)
+        );
+        assert_eq!(
+            select_bounded_display_dimensions(2_560, 1_440, 1_920, 1_200).expect("16:9 fallback"),
+            (1_920, 1_080)
+        );
+        assert_eq!(
+            select_bounded_display_dimensions(1_280, 800, 1_024, 768).expect("16:10 fallback"),
+            (1_024, 640)
+        );
+        assert_eq!(
+            select_bounded_display_dimensions(1_280, 800, 2_560, 1_600)
+                .expect("requested mode fits"),
+            (1_280, 800)
+        );
+        assert!(
+            select_bounded_display_dimensions(1_280, 800, 639, 399)
+                .expect_err("unusable maximum is rejected")
+                .contains("cannot fit")
+        );
     }
 
     #[test]

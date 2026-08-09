@@ -14,7 +14,11 @@ This directory contains the native Windows 11 x64 virtual-display boundary:
 The driver reports one stable LadoFlow monitor. Windows remembers its layout
 because the monitor has a fixed container identity. The preferred mode is
 1920×1080 at 60 Hz; the mode table also covers common 16:9, 16:10, 4:3, iPad,
-and high-resolution tablet sizes through 2732×2048 at 60 Hz.
+and high-resolution tablet sizes through 2732×2048 at 60 Hz, with bounded
+fallbacks down to 640×400 for lower-capability decoders. The desktop host only
+changes this identity-verified virtual monitor, validates the exact advertised
+mode first, and applies it for the current Windows session without persisting a
+display profile.
 
 ## Frame path
 
