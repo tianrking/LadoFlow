@@ -5,10 +5,11 @@ This directory contains the native Windows 11 x64 virtual-display boundary:
 - `driver/` is a UMDF 2 Indirect Display Driver built on IddCx;
 - `service/` is the LocalSystem process that exclusively owns `HSWDEVICE`;
 - `controller/` is an unprivileged, machine-readable service client;
+- `setup/` is the administrator-only driver/service install and removal helper;
 - `common/Protocol.h` is the fixed-size versioned local IPC contract;
-- `build.ps1` restores pinned WDK packages, builds all three binaries, runs the
+- `build.ps1` restores pinned WDK packages, builds all four binaries, runs the
   Universal API validator, validates the generated INF, creates the catalog,
-  smoke-tests the controller, and assembles a development artifact.
+  smoke-tests every user-mode boundary, and assembles a development artifact.
 
 The driver reports one stable LadoFlow monitor. Windows remembers its layout
 because the monitor has a fixed container identity. The preferred mode is
@@ -68,7 +69,8 @@ platform/windows/idd/dist/Release/x64/
 ├── symbols/
 ├── LadoFlowIdd.cer                 # development certificate, when generated
 ├── LadoFlowDisplayService.exe
-└── LadoFlowVirtualDisplay.exe
+├── LadoFlowVirtualDisplay.exe
+└── LadoFlowWindowsSetup.exe
 ```
 
 ## Privileged lifecycle boundary
@@ -101,6 +103,36 @@ required client rights to interactive users, and keeps the first/only pipe
 instance open. The client verifies that the pipe server PID is the same PID SCM
 reports for `LadoFlowVirtualDisplayService` before sending a command.
 
+## Installer lifecycle boundary
+
+`LadoFlowWindowsSetup.exe` is a static native helper invoked by the per-machine
+Tauri NSIS installer. It never imports certificates, changes Secure Boot,
+enables test-signing, or edits boot configuration. Its mutating commands require
+an elevated token and are deliberately not exposed through the Tauri command
+surface.
+
+The post-install path validates every payload file and the exact LadoFlow INF
+identity, stages/installs the driver package through Windows driver APIs,
+creates or updates the LocalSystem service, enables delayed automatic start and
+bounded restart recovery, then records the published `oemNN.inf` name and INF
+SHA-256 under 64-bit HKLM. Uninstall first verifies every recorded package name,
+INF identity, and hash; it never searches for an arbitrary `oemNN.inf` to
+delete. Upgrade preparation stops only a service whose executable name, account,
+display name, and command shape match the owned LadoFlow service.
+
+These commands are always non-mutating and are executed by `build.ps1` where
+applicable:
+
+```powershell
+.\LadoFlowWindowsSetup.exe self-test
+.\LadoFlowWindowsSetup.exe plan-install
+.\LadoFlowWindowsSetup.exe plan-uninstall
+```
+
+The NSIS hooks call `prepare-install`, `install`, and `uninstall`. Exit code
+`3010` propagates a Windows restart request; every other nonzero result aborts
+the corresponding installer step and leaves the helper available for recovery.
+
 ## Controlled development installation
 
 The build script intentionally does **not** install the driver, add certificates
@@ -108,34 +140,26 @@ to trust stores, enable Windows test-signing mode, disable Secure Boot, or edit
 boot configuration. Those are machine security changes and must be performed
 only on an isolated development machine after explicit approval.
 
-Once an appropriately trusted package is available, a controlled development
-installation from an elevated PowerShell is:
+Once an appropriately trusted package is available, build the per-machine NSIS
+installer from the repository root:
 
 ```powershell
-pnputil /add-driver .\driver\LadoFlowIdd.inf /install
-$serviceBinary = (Resolve-Path .\LadoFlowDisplayService.exe).Path
-sc.exe create LadoFlowVirtualDisplayService binPath= "`"$serviceBinary`" service" start= auto obj= LocalSystem DisplayName= "LadoFlow Virtual Display Service"
-sc.exe description LadoFlowVirtualDisplayService "Owns the local LadoFlow indirect display lifecycle."
-sc.exe start LadoFlowVirtualDisplayService
-.\LadoFlowVirtualDisplay.exe start
-.\LadoFlowVirtualDisplay.exe status
+pnpm --filter @ladoflow/desktop tauri build --bundles nsis
 ```
 
-Stop the virtual device before removing the package:
+Run the resulting installer only on the approved test machine. Its Windows
+uninstall entry invokes the same setup helper before Tauri removes application
+files. For read-only diagnostics after installation:
 
 ```powershell
-.\LadoFlowVirtualDisplay.exe stop
-sc.exe stop LadoFlowVirtualDisplayService
-sc.exe delete LadoFlowVirtualDisplayService
-pnputil /enum-drivers
-pnputil /delete-driver oemNN.inf /uninstall
+.\windows\LadoFlowVirtualDisplay.exe status
+.\windows\LadoFlowWindowsSetup.exe plan-uninstall
 ```
 
-Replace `oemNN.inf` only with the published name that `pnputil /enum-drivers`
-shows for `LadoFlow Project`. These commands are documentation, not actions
-performed by the build. Production distribution additionally requires a
-Microsoft-accepted release signature, recovery-configured service registration,
-and installer-managed rollback.
+The current build proof compiles the installer and all hooks without executing
+them. Production distribution additionally requires a Microsoft-accepted
+release signature plus clean-machine install, upgrade, rollback, reboot, and
+uninstall evidence.
 
 ## Release gates
 

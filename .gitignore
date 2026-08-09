@@ -48,5 +48,6 @@ platform/windows/idd/x64/
 platform/windows/idd/driver/x64/
 platform/windows/idd/controller/x64/
 platform/windows/idd/service/x64/
+platform/windows/idd/setup/x64/
 platform/windows/idd/dist/
 platform/windows/idd/*.binlog

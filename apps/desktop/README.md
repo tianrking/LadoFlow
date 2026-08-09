@@ -132,9 +132,14 @@ pnpm --filter @ladoflow/desktop tauri build --bundles nsis
 ```
 
 The Windows-specific bundle first builds the IddCx driver, service, and
-controller, then includes their binaries and driver package under the app's
-`windows` resources directory. It does **not** yet register the service or
-driver; installation, rollback, and exact driver removal are a separate
-administrator-level milestone. CI uploads that unsigned installer as a
-short-lived workflow artifact. Code signing remains a release gate; an unsigned
-CI artifact is not a public release.
+controller, then includes their binaries, driver package, and native setup
+helper under the app's `windows` resources directory. The NSIS package is
+per-machine and invokes bounded install, upgrade-preparation, and uninstall
+hooks. The helper stages the exact driver package, configures the LocalSystem
+service with delayed start and recovery, records the published OEM INF plus its
+SHA-256 under HKLM, and validates that identity before removal. Pure self-tests
+and non-mutating install/uninstall plans run during the build. An actual
+administrator install/uninstall has not yet been performed on a trusted clean
+host, and the development catalog is not a production signature. CI uploads the
+unsigned installer as a short-lived workflow artifact; it is not a public
+release.

@@ -68,6 +68,7 @@ path; it is not automatically a release claim.
 - [ ] Runtime mode/rotation negotiation with the connected mobile display
 - [ ] Trusted install plus sleep/wake, crash, GPU-reset, and rollback recovery
 - [x] Automatic Tauri lifecycle and virtual-monitor selection integration
+- [x] Per-machine NSIS hooks and hash-verified native setup-helper dry-run/build validation
 - [ ] Installer/uninstaller and rollback validation
 
 ## M6 — iOS/iPadOS display

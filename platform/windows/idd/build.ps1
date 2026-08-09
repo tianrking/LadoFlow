@@ -222,6 +222,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "The privileged service self-test failed with exit code $LASTEXITCODE."
 }
 
+$setup = Join-Path $outputRoot 'LadoFlowWindowsSetup.exe'
+& $setup self-test
+if ($LASTEXITCODE -ne 0) {
+    throw "The Windows setup helper self-test failed with exit code $LASTEXITCODE."
+}
+
 $artifactRoot = Join-Path $projectRoot "dist\$Configuration\x64"
 $driverArtifact = Join-Path $artifactRoot 'driver'
 $symbolsArtifact = Join-Path $artifactRoot 'symbols'
@@ -229,6 +235,13 @@ New-Item -ItemType Directory -Force -Path $driverArtifact, $symbolsArtifact | Ou
 Copy-Item -Path (Join-Path $outputRoot 'LadoFlowIdd\*') -Destination $driverArtifact -Recurse -Force
 Copy-Item -LiteralPath $controller -Destination $artifactRoot -Force
 Copy-Item -LiteralPath $service -Destination $artifactRoot -Force
+Copy-Item -LiteralPath $setup -Destination $artifactRoot -Force
+
+$packagedSetup = Join-Path $artifactRoot 'LadoFlowWindowsSetup.exe'
+& $packagedSetup plan-install
+if ($LASTEXITCODE -ne 0) {
+    throw "The packaged Windows setup plan failed with exit code $LASTEXITCODE."
+}
 
 $certificate = Join-Path $outputRoot 'LadoFlowIdd.cer'
 if (Test-Path -LiteralPath $certificate) {

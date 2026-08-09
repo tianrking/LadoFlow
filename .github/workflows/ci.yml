@@ -114,6 +114,11 @@ jobs:
         if: runner.os == 'Windows'
         run: pnpm --filter @ladoflow/desktop tauri build --bundles nsis
 
+      - name: Verify Windows installer composition
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\platform\windows\idd\verify-installer.ps1
+
       - name: Upload unsigned Windows installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4

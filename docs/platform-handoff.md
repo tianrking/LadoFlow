@@ -182,9 +182,13 @@ reserved fields and correlation IDs, and verifies the server PID against SCM.
 The Tauri host now maps that JSON state into a typed platform status, caches
 short-lived polling results, and performs bounded enable/disable transitions.
 After enable it waits for the LadoFlow `HMONITOR` and selects it; after disable it
-waits for removal. The Windows NSIS build includes the controller, service, DLL,
-INF, and catalog as resources but intentionally does not claim to install them.
-The remaining host and installation work must cover:
+waits for removal. The per-machine Windows NSIS build includes the controller,
+service, setup helper, DLL, INF, and catalog. Its hooks stop the owned service
+before an upgrade, install after resource copy, and remove the service and only
+the recorded hash-verified OEM INF packages before uninstall. The setup helper
+has build-time self-tests and non-mutating plans, but its administrator path has
+not yet run on a trusted clean test host. The remaining host and installation
+work must cover:
 
 - supported modes and active mode;
 - frame/surface handoff or encoded-stream handoff;

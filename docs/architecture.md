@@ -152,8 +152,11 @@ desktop host captures the resulting virtual `HMONITOR` through the same verified
 WGC/encoder path. Source/build and non-installing service/IPC validation are
 complete. The Tauri shell now owns bounded enable/disable calls, structured
 status, virtual-monitor discovery, and automatic source selection. The unsigned
-Windows bundle contains all native resources but does not register them with the
-operating system; trusted installation, rollback, signing, and physical
+Windows bundle contains all native resources and uses a per-machine NSIS hook
+plus a static native setup helper for driver-store and service operations. The
+helper records the published OEM INF and hash so uninstall never guesses a
+driver package. Its build, self-tests, and non-mutating plans pass; trusted
+clean-machine installation, rollback execution, signing, and physical
 extended-display evidence remain release gates.
 
 ### macOS

@@ -134,8 +134,10 @@ existing-monitor mirror mode until the driver and service are installed on a
 controlled test host. The Windows Tauri shell now exposes structured service and
 monitor state, enables or disables the virtual display through that client, and
 automatically selects the resulting virtual monitor. Its unsigned NSIS artifact
-contains the driver, service, and controller resources, but the current package
-does not register them with Windows. Windows-to-Android
+contains the driver, service, controller, and a native transactional setup
+helper. The package is configured for per-machine installation and has
+build-verified install/upgrade/uninstall hooks; those hooks have not yet been
+executed on a trusted clean test host. Windows-to-Android
 USB has not yet been verified on a physical device. See
 [development setup](./docs/development.md) and the
 [platform handoff](./docs/platform-handoff.md).
