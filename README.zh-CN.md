@@ -29,9 +29,11 @@ LadoFlow 的目标，是让 Windows、macOS 和 Linux 电脑把 Android 平板/�
 
 | 模块 | 当前状态 | 最终目标 |
 | --- | --- | --- |
-| 共享通信协议 | 初始二进制帧已实现 | 版本化控制、视频、输入和遥测消息 |
-| Windows 主机端 | 仅完成架构设计 | 签名虚拟显示驱动和桌面 Host |
-| macOS 主机端 | 仅完成架构设计 | 原生虚拟显示适配和公证 Host |
+| 共享通信协议 | M1 消息与有界二进制帧已实现 | 版本化控制、视频、输入和遥测消息 |
+| 共享运行时 | 能力协商、会话、重连策略、遥测、帧调度和内存 loopback 已实现 | 被所有主机端与显示端复用的跨平台运行时 |
+| 桌面主机端 | Tauri 2 loopback 与诊断界面可运行 | 同一外壳按目标系统接入原生服务 |
+| macOS 主机端 | 录屏权限检查、显示器发现和未签名本地 `.app` 已实现 | ScreenCaptureKit/VideoToolbox、原生虚拟显示适配和公证 Host |
+| Windows 主机端 | 已有 Tauri 边界和跨平台 CI | Windows Graphics Capture/Media Foundation 服务及签名间接显示驱动 |
 | Linux 主机端 | 仅完成架构设计 | Wayland、X11、DRM 兼容路径 |
 | Android 显示端 | 仅完成架构设计 | Kotlin 原生接收、硬解和触控回传 |
 | iOS/iPadOS 显示端 | 仅完成架构设计 | Swift 原生接收、硬解和触控回传 |
@@ -64,13 +66,18 @@ Logo 由两个相邻的圆角屏幕和一条连续路径组成：
 
 进一步阅读：[架构](./docs/architecture.md)、[协议](./docs/protocol.md)、[开发环境](./docs/development.md)。
 
-## 验证当前基础
+## 运行当前桌面基础
+
+安装 Rust 1.97.1、Node.js LTS、pnpm 10.26.0，以及对应系统的
+[Tauri 前置依赖](https://v2.tauri.app/start/prerequisites/)，然后执行：
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+pnpm install --frozen-lockfile
+pnpm check
+pnpm dev:desktop
 ```
+
+当前应用会完成真实协议协商，并把合成帧送入有界媒体队列，同时展示帧率、丢帧与延迟遥测；它是可测试的主机基础，还不是可用的扩展屏。详见[开发环境](./docs/development.md)与[平台接手说明](./docs/platform-handoff.md)。
 
 ## 许可证
 

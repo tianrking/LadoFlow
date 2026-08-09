@@ -1,6 +1,8 @@
 # Roadmap
 
-This roadmap is ordered by evidence, not by marketing surface area.
+This roadmap is ordered by the current implementation sequence and by evidence,
+not by marketing surface area. A checked item has a repeatable local validation
+path; it is not automatically a release claim.
 
 ## M0 — Repository foundation
 
@@ -10,54 +12,67 @@ This roadmap is ordered by evidence, not by marketing surface area.
 - [x] Baseline CI configuration
 - [ ] Confirm license and trademark strategy before paid distribution
 
-## M1 — Protocol and loopback
+## M1 — Protocol, shared runtime, and loopback
 
 - [x] Versioned, bounded wire framing
-- [x] Hello and capability messages
-- [ ] Display-configuration message
+- [x] Hello, capability, display-configuration, video, input, telemetry, ping/pong, and error messages
 - [x] Malformed-input, chunking, and round-trip tests
-- [ ] In-memory duplex transport
-- [ ] Synthetic frame producer/consumer
-- [ ] Latency and frame-pacing telemetry
+- [x] Capability negotiation and reconnect-aware session state
+- [x] Bounded in-memory duplex transport with obsolete-media supersession
+- [x] Codec-neutral synthetic frame producer and 30/60 Hz pacing
+- [x] Rolling latency, drop, queue-depth, and frame-pacing telemetry
+- [x] Runnable Tauri 2 desktop loopback host
 
-## M2 — Windows host + Android display over USB
+## M2 — macOS host proof of concept
 
-- [ ] Android native receiver shell
+- [x] Target-gated screen-recording permission and active-display discovery adapter
+- [x] Unsigned local macOS application bundle
+- [ ] ScreenCaptureKit frame stream with resize and display-removal handling
+- [ ] IOSurface/Metal-friendly frame boundary with explicit pixel format
+- [ ] VideoToolbox H.264 hardware-encode integration
+- [ ] Native virtual-display feasibility spike and documented distribution constraints
+- [ ] Repeatable 30/60 Hz capture-to-loopback latency test
+- [ ] Signing and notarization pipeline
+
+## M3 — Windows host proof of concept
+
+- [ ] Validate the Tauri shell on a physical Windows development machine
+- [ ] Windows Graphics Capture source enumeration and frame stream
+- [ ] Direct3D surface handoff and Media Foundation H.264 hardware encode
+- [ ] Isolate privileged/driver communication from the Tauri UI process
+- [ ] Repeatable 30/60 Hz capture-to-loopback latency test
+
+## M4 — Android display and USB
+
+- [ ] Native Kotlin receiver shell
 - [ ] App-compatible USB discovery and pairing without ADB
 - [ ] H.264 hardware decoder and renderer
-- [ ] Windows capture/encode proof of concept
 - [ ] Touch and pointer return path
-- [ ] Repeatable 30/60 Hz latency test
+- [ ] Automatic disconnect/reconnect behavior
+- [ ] macOS and Windows USB interoperability test
 
-## M3 — Windows virtual extended display
+## M5 — Windows virtual extended display
 
-- [ ] Supported virtual display driver path
+- [ ] Supported IddCx indirect-display driver path
 - [ ] Resolution and rotation negotiation
 - [ ] Driver/service isolation and recovery
 - [ ] Signed development package
 - [ ] Installer/uninstaller and rollback validation
 
-## M4 — macOS host
-
-- [ ] Native virtual-display adapter research spike
-- [ ] Hardware capture/encode integration
-- [ ] Android USB interoperability
-- [ ] Signing and notarization pipeline
-
-## M5 — iOS/iPadOS display
+## M6 — iOS/iPadOS display
 
 - [ ] Native Swift receiver and Metal presentation
 - [ ] App Store-compatible wired transport
 - [ ] Hardware decode, rotation, touch, and keyboard behavior
 - [ ] Windows and macOS interoperability matrix
 
-## M6 — Linux host
+## M7 — Linux host
 
 - [ ] Wayland compositor support matrix
 - [ ] X11/DRM fallback path
 - [ ] Debian package first, then RPM-family packaging
 
-## M7 — Trusted LAN
+## M8 — Trusted LAN
 
 - [ ] Discovery that does not leak screen content
 - [ ] Explicit pairing and authenticated encryption

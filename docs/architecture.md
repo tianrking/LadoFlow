@@ -42,6 +42,39 @@ flowchart TB
     QOS --> EN
 ```
 
+## Current implementation slice
+
+The first executable slice deliberately substitutes synthetic media and an
+in-memory link for unfinished native capture, USB, and mobile presentation:
+
+```mermaid
+flowchart LR
+    UI["Tauri diagnostics UI"] --> IPC["Narrow Rust commands"]
+    IPC --> RT["Desktop loopback runtime"]
+    RT --> NEG["ladoflow-core\nnegotiation · session · telemetry"]
+    RT --> SYN["ladoflow-media\nsynthetic source · 30/60 Hz pacer"]
+    SYN --> PRO["ladoflow-protocol\ntyped VideoFrame · bounded framing"]
+    PRO --> MEM["ladoflow-transport\nbounded loopback · supersession"]
+    MEM --> RT
+    MAC["Target-gated macOS adapter\npermission · display discovery"] --> IPC
+```
+
+This path exercises the shared contracts end to end without pretending to be a
+usable second display. Native frame sources will replace `SyntheticFrameProducer`;
+USB or LAN adapters will replace the loopback pair; neither replacement should
+change session or wire semantics.
+
+The implementation lives in these ownership boundaries:
+
+| Boundary | Location | Owns |
+| --- | --- | --- |
+| Wire protocol | `crates/ladoflow-protocol` | Bounded framing and versioned payloads |
+| Session policy | `crates/ladoflow-core` | Negotiation, lifecycle, continuity, quality, telemetry |
+| Media policy | `crates/ladoflow-media` | Codec-neutral metadata, pacing, scheduling, synthetic diagnostics |
+| Link policy | `crates/ladoflow-transport` | Control/media channels, queue limits, supersession, reconnect |
+| Desktop composition | `apps/desktop/src-tauri` | Tauri commands, worker lifecycle, platform adapter selection |
+| Native integrations | `apps/desktop/src-tauri/src/platform` and `platform/` | OS APIs, services, and drivers |
+
 ## Boundaries
 
 ### Platform-native
@@ -93,6 +126,11 @@ Use the supported Indirect Display Driver model where practical. The signed driv
 
 Keep virtual-display integration isolated behind a native adapter because public API availability and distribution constraints can change by OS version. Signing and notarization are release gates, not afterthoughts.
 
+The current adapter uses CoreGraphics only for permission preflight/request and
+active-display metadata. Actual frame delivery belongs in a ScreenCaptureKit
+adapter, and hardware encoding belongs behind a VideoToolbox boundary. Neither
+API should be surfaced directly to the TypeScript UI.
+
 ### Linux
 
 Support will be backend-specific. Wayland compositors, X11, and DRM virtual outputs cannot be represented as one universal installer without platform checks.
@@ -112,4 +150,3 @@ Use Swift, VideoToolbox/AVFoundation where applicable, Metal rendering, and App 
 - Network listeners bind conservatively and authenticate before accepting display data.
 - Parsers reject unknown versions, oversized messages, invalid lengths, and resource-exhaustion patterns.
 - Captured pixels remain local unless a future remote mode is separately designed and enabled.
-

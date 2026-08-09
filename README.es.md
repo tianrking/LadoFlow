@@ -29,9 +29,11 @@ La experiencia final deberá ser sencilla: instalar el host, abrir LadoFlow en l
 
 | Área | Estado actual | Objetivo |
 | --- | --- | --- |
-| Protocolo compartido | Encuadre binario inicial implementado | Mensajes versionados de control, vídeo, entrada y telemetría |
-| Host Windows | Solo arquitectura | Controlador de pantalla virtual firmado y aplicación host |
-| Host macOS | Solo arquitectura | Adaptador nativo y aplicación notarizada |
+| Protocolo compartido | Mensajes M1 y encuadre acotado implementados | Mensajes versionados de control, vídeo, entrada y telemetría |
+| Runtime compartido | Negociación, sesiones, reconexión, telemetría, ritmo y loopback implementados | Runtime común para hosts y pantallas |
+| Host de escritorio | Aplicación Tauri 2 con loopback y diagnósticos ejecutable | Una interfaz con servicios nativos por plataforma |
+| Host macOS | Permisos de captura, descubrimiento de pantallas y paquete local sin firmar implementados | ScreenCaptureKit/VideoToolbox, pantalla virtual nativa y aplicación notarizada |
+| Host Windows | Límite Tauri y CI multiplataforma | Captura/Media Foundation y controlador de pantalla indirecta firmado |
 | Host Linux | Solo arquitectura | Integración compatible con Wayland, X11 y DRM |
 | Pantalla Android | Solo arquitectura | Receptor Kotlin nativo con decodificación por hardware |
 | Pantalla iOS/iPadOS | Solo arquitectura | Receptor Swift nativo con decodificación por hardware |
@@ -56,13 +58,21 @@ El símbolo muestra dos pantallas contiguas unidas por un recorrido continuo. La
 
 Consulta la [arquitectura](./docs/architecture.md), el [protocolo](./docs/protocol.md) y la [guía de marca](./docs/brand.md).
 
-## Compilar la base actual
+## Ejecutar la base de escritorio actual
+
+Instala Rust 1.97.1, Node.js LTS, pnpm 10.26.0 y los
+[requisitos de Tauri](https://v2.tauri.app/start/prerequisites/) para tu sistema.
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+pnpm install --frozen-lockfile
+pnpm check
+pnpm dev:desktop
 ```
+
+La aplicación negocia una sesión real y mueve fotogramas sintéticos por el
+transporte acotado mientras muestra telemetría. Es una base verificable, no un
+monitor extendido listo para usar. Consulta la [configuración](./docs/development.md)
+y el [traspaso de plataformas](./docs/platform-handoff.md).
 
 ## Licencia
 

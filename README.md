@@ -44,9 +44,11 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 
 | Area | Current state | Intended result |
 | --- | --- | --- |
-| Shared wire protocol | Initial framing implemented | Versioned control, media, input, and telemetry messages |
-| Windows host | Architecture only | Signed virtual display driver and desktop host |
-| macOS host | Architecture only | Native virtual-display adapter and notarized host |
+| Shared wire protocol | M1 payloads and bounded framing implemented | Versioned control, media, input, and telemetry messages |
+| Shared runtime | Negotiation, sessions, reconnect policy, telemetry, pacing, and bounded loopback implemented | Platform-neutral runtime used by every host and display |
+| Desktop host | Runnable Tauri 2 loopback and diagnostics UI | One shell with target-gated native services |
+| macOS host | Permission check, display discovery, and unsigned local app bundle implemented | ScreenCaptureKit/VideoToolbox pipeline, native virtual-display adapter, and notarized host |
+| Windows host | Tauri boundary and cross-platform CI only | Windows Graphics Capture/Media Foundation service and signed indirect-display driver |
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
 | Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
 | iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
@@ -107,17 +109,23 @@ LadoFlow/
 4. **Local by default.** No account, analytics, or cloud relay is required for the core product.
 5. **Small, testable commits.** Each milestone must include a repeatable validation path.
 
-## Build the current foundation
+## Run the current desktop foundation
 
-The repository currently requires a stable Rust toolchain:
+Install Rust 1.97.1, Node.js LTS, pnpm 10.26.0, and the
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+Then run:
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+pnpm install --frozen-lockfile
+pnpm check
+pnpm dev:desktop
 ```
 
-Platform build instructions will be added only when the corresponding project can be built and tested. See [development setup](./docs/development.md).
+The desktop application negotiates a real protocol session and drives synthetic
+frames through the bounded media transport while showing live pacing, drop, and
+latency telemetry. It is a testable host foundation, not yet a usable extended
+display. See [development setup](./docs/development.md) and the
+[platform handoff](./docs/platform-handoff.md).
 
 ## Security and privacy
 

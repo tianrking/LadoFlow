@@ -23,10 +23,14 @@ display discovery. Actual ScreenCaptureKit streaming and virtual-display
 creation remain separate native milestones; the UI does not claim that the
 synthetic path is a usable extended display.
 
+Native capture, encoder, driver, and Windows ownership boundaries are recorded
+in the [platform handoff](../../docs/platform-handoff.md).
+
 ## Validate
 
 ```bash
 pnpm check:desktop
+cargo clippy -p ladoflow-desktop --all-targets -- -D warnings
 cargo test -p ladoflow-desktop
 ```
 
