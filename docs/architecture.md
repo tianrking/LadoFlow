@@ -125,8 +125,10 @@ Use the supported Indirect Display Driver model where practical. The signed driv
 The current adapter discovers monitors through Win32 and verifies selected-
 monitor capture with a hardware D3D11 device and a free-threaded
 `Windows.Graphics.Capture` frame pool. GPU surfaces stay native; only aggregate
-probe diagnostics cross into TypeScript. A long-running capture source, Media
-Foundation encoder, and IddCx service/driver remain separate boundaries.
+probe diagnostics cross into TypeScript. A second native probe verifies a real
+hardware Media Foundation NV12-to-H.264 bitstream and handles asynchronous
+output renegotiation. The long-running zero-copy connection between those two
+probes and the IddCx service/driver remain separate boundaries.
 
 ### macOS
 

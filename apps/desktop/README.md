@@ -31,8 +31,11 @@ probe with `Windows.Graphics.Capture`, a hardware D3D11 device, and a
 free-threaded frame pool. The UI reports actual GPU-surface callbacks, dirty
 regions, dimensions, and startup timing. Its persistent native worker also
 enumerates Media Foundation H.264 encoders that explicitly accept NV12 and are
-registered as hardware MFTs. Discovery does not yet claim that a frame has been
-encoded, and the app does not claim a long-running stream or virtual display.
+registered as hardware MFTs. A bounded probe activates each candidate in order,
+handles asynchronous input/output events and dynamic output renegotiation, and
+requires non-empty Annex B H.264 output before reporting encode verification.
+The probe has produced a real Intel Quick Sync bitstream on physical hardware;
+it is not yet the long-running capture-to-encoder path or a virtual display.
 
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).
@@ -49,6 +52,12 @@ On an interactive Windows desktop, verify the real GPU capture path explicitly:
 
 ```powershell
 cargo test -p ladoflow-desktop native_capture_probe_receives_a_gpu_surface -- --ignored --nocapture
+```
+
+Verify a physical hardware encoder produces Annex B H.264 bytes with:
+
+```powershell
+cargo test -p ladoflow-desktop hardware_h264_encoder_outputs_annex_b_stream -- --ignored --nocapture
 ```
 
 Build an ad-hoc local macOS application bundle with:

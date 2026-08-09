@@ -37,9 +37,10 @@ path; it is not automatically a release claim.
 
 ## M3 — Windows host proof of concept
 
-- [ ] Validate the Tauri shell on a physical Windows development machine
-- [ ] Windows Graphics Capture source enumeration and frame stream
-- [ ] Direct3D surface handoff and Media Foundation H.264 hardware encode
+- [x] Validate the Tauri shell on a physical Windows development machine
+- [x] Windows Graphics Capture source enumeration and bounded GPU-surface probe
+- [x] Media Foundation hardware-MFT discovery and real NV12-to-Annex-B H.264 probe
+- [ ] Long-running Direct3D capture, NV12 conversion, and encoder handoff
 - [ ] Isolate privileged/driver communication from the Tauri UI process
 - [ ] Repeatable 30/60 Hz capture-to-loopback latency test
 

@@ -51,7 +51,7 @@ use super::{CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus
 
 mod media_foundation;
 
-use self::media_foundation::{HardwareEncoder, MediaFoundationRuntime};
+use self::media_foundation::{HardwareEncodeProbe, HardwareEncoder, MediaFoundationRuntime};
 
 const CAPTURE_PROBE_DURATION: Duration = Duration::from_millis(750);
 const CAPTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -105,9 +105,15 @@ enum CaptureCommand {
         fps: u16,
         response: SyncSender<Result<CaptureProbeReport, String>>,
     },
-    EncoderCapabilities {
-        response: SyncSender<Result<Vec<HardwareEncoder>, String>>,
+    EncoderDiagnostics {
+        response: SyncSender<EncoderDiagnostics>,
     },
+}
+
+#[derive(Clone)]
+struct EncoderDiagnostics {
+    capabilities: Result<Vec<HardwareEncoder>, String>,
+    encode_probe: Result<HardwareEncodeProbe, String>,
 }
 
 struct CaptureWorker {
@@ -135,6 +141,14 @@ impl CaptureWorker {
                     Ok(_runtime) => MediaFoundationRuntime::hardware_h264_encoders(),
                     Err(error) => Err(error.clone()),
                 };
+                let encoder_probe = match &media_foundation {
+                    Ok(_runtime) => MediaFoundationRuntime::probe_hardware_h264_encode(),
+                    Err(error) => Err(error.clone()),
+                };
+                let encoder_diagnostics = EncoderDiagnostics {
+                    capabilities: encoder_capabilities,
+                    encode_probe: encoder_probe,
+                };
                 let _media_foundation = media_foundation;
 
                 while let Ok(command) = receiver.recv() {
@@ -153,8 +167,8 @@ impl CaptureWorker {
                             let result = probe_screen_capture_on_worker(display_id.as_deref(), fps);
                             let _ = response.send(result);
                         }
-                        CaptureCommand::EncoderCapabilities { response } => {
-                            let _ = response.send(encoder_capabilities.clone());
+                        CaptureCommand::EncoderDiagnostics { response } => {
+                            let _ = response.send(encoder_diagnostics.clone());
                         }
                     }
                 }
@@ -194,14 +208,14 @@ impl CaptureWorker {
             .map_err(|error| format!("Windows capture probe timed out: {error}"))?
     }
 
-    fn encoder_capabilities(&self) -> Result<Vec<HardwareEncoder>, String> {
+    fn encoder_diagnostics(&self) -> Result<EncoderDiagnostics, String> {
         let (response, receiver) = sync_channel(1);
         self.commands
-            .send(CaptureCommand::EncoderCapabilities { response })
+            .send(CaptureCommand::EncoderDiagnostics { response })
             .map_err(|error| format!("Windows media worker stopped: {error}"))?;
         receiver
             .recv_timeout(CAPTURE_COMMAND_TIMEOUT)
-            .map_err(|error| format!("Windows encoder query timed out: {error}"))?
+            .map_err(|error| format!("Windows encoder query timed out: {error}"))
     }
 }
 
@@ -419,19 +433,36 @@ fn query_capture_support() -> Result<bool, String> {
 }
 
 fn query_encoder_status() -> String {
-    match capture_worker().and_then(CaptureWorker::encoder_capabilities) {
+    let diagnostics = match capture_worker().and_then(CaptureWorker::encoder_diagnostics) {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => return format!("Media Foundation hardware H.264 query failed: {error}"),
+    };
+    let encoders = match diagnostics.capabilities {
         Ok(encoders) if encoders.is_empty() => {
-            "Media Foundation reported no hardware H.264 encoder for NV12 input".to_owned()
+            return "Media Foundation reported no hardware H.264 encoder for NV12 input".to_owned();
         }
-        Ok(encoders) => {
-            let names = encoders
-                .into_iter()
-                .map(|encoder| encoder.name)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("Media Foundation hardware H.264 encoder: {names}")
-        }
-        Err(error) => format!("Media Foundation hardware H.264 query failed: {error}"),
+        Ok(encoders) => encoders,
+        Err(error) => return format!("Media Foundation hardware H.264 query failed: {error}"),
+    };
+    let names = encoders
+        .into_iter()
+        .map(|encoder| encoder.name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match diagnostics.encode_probe {
+        Ok(probe) => format!(
+            "Media Foundation hardware H.264 encode verified with {}: {}x{}, {} frame(s), {} bytes / {} Annex B NAL unit(s), {} ms; available: {names}",
+            probe.encoder_name,
+            probe.width,
+            probe.height,
+            probe.frames_submitted,
+            probe.encoded_bytes,
+            probe.nal_units,
+            probe.elapsed_ms
+        ),
+        Err(error) => format!(
+            "Media Foundation hardware H.264 encoders available ({names}), but the encode probe failed: {error}"
+        ),
     }
 }
 
@@ -802,5 +833,14 @@ mod tests {
             assert!(report.callbacks > 0);
             assert!(report.frames_with_surface > 0);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a physical Windows hardware H.264 encoder"]
+    fn hardware_h264_encoder_outputs_annex_b_stream() {
+        let status = collect_status();
+        eprintln!("{}", status.encoder_status);
+        assert!(status.encoder_status.contains("encode verified"));
+        assert!(status.encoder_status.contains("Annex B NAL unit"));
     }
 }
