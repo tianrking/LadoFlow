@@ -1,4 +1,5 @@
 mod commands;
+mod host_protocol;
 mod platform;
 mod runtime;
 

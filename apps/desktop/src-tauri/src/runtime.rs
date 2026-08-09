@@ -9,25 +9,36 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ladoflow_core::{LatencyAggregator, Session, SessionPhase, StreamContinuity, negotiate};
+use ladoflow_core::{
+    LatencyAggregator, SequenceDisposition, Session, SessionPhase, StreamContinuity, negotiate,
+};
 use ladoflow_media::{
     FrameDimensions, FrameKind, FramePacer, FrameRate, PaceDecision, SyntheticConfig,
     SyntheticFrameProducer, VideoFormat,
 };
 use ladoflow_protocol::{
-    Capabilities, CodecSet, DecodeOutcome, FeatureFlags, Frame as WireFrame, FrameFlags, Hello,
-    InputCapabilities, PROTOCOL_VERSION, Role, VideoFrame, VideoFrameMetadata,
+    Capabilities, CodecSet, DecodeOutcome, ErrorMessage, FeatureFlags, Frame as WireFrame,
+    FrameFlags, Hello, InputCapabilities, InputEvent, MessageType, PROTOCOL_VERSION, Ping, Pong,
+    Role, Telemetry, VideoFrame, VideoFrameMetadata,
 };
 use ladoflow_transport::LoopbackConfig as TransportLoopbackConfig;
-use ladoflow_transport::{Channel, Packet, PacketTransport, SupersessionKey, loopback_pair};
+use ladoflow_transport::{
+    Channel, ConnectionState, Packet, PacketTransport, SupersessionKey, loopback_pair,
+};
 use serde::{Deserialize, Serialize};
 
+use crate::host_protocol::{HostProtocolConfig, negotiate_host_transport, send_control_payload};
 use crate::platform::{
     PlatformStatus, UsbAccessoryManager, UsbAccessoryProbeReport, collect_status,
 };
 
 const LATENCY_WINDOW: NonZeroUsize = NonZeroUsize::new(240).expect("240 is non-zero");
 const MEDIA_STREAM_KEY: SupersessionKey = SupersessionKey::new(1);
+const USB_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
+const USB_CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+const USB_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const LOOPBACK_TRANSPORT_NAME: &str = "In-memory duplex";
+const USB_TRANSPORT_NAME: &str = "Android Open Accessory USB";
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +65,7 @@ impl LoopbackConfig {
 enum SessionPhaseView {
     Idle,
     Negotiating,
+    Connected,
     Streaming,
     Stopped,
     Failed,
@@ -63,8 +75,9 @@ enum SessionPhaseView {
 #[serde(rename_all = "camelCase")]
 pub struct SessionSnapshot {
     phase: SessionPhaseView,
-    transport: &'static str,
-    peer_name: Option<&'static str>,
+    transport: String,
+    peer_name: Option<String>,
+    last_error: Option<String>,
     configured_width: Option<u16>,
     configured_height: Option<u16>,
     configured_fps: Option<u16>,
@@ -101,6 +114,9 @@ struct SharedState {
     phase: SessionPhaseView,
     session: Option<Session>,
     config: Option<LoopbackConfig>,
+    transport: &'static str,
+    peer_name: Option<String>,
+    last_error: Option<String>,
     started_at: Option<Instant>,
     latency: LatencyAggregator,
     frames_produced: u64,
@@ -116,6 +132,9 @@ impl SharedState {
             phase: SessionPhaseView::Idle,
             session: None,
             config: None,
+            transport: "No active transport",
+            peer_name: None,
+            last_error: None,
             started_at: None,
             latency: LatencyAggregator::new(LATENCY_WINDOW),
             frames_produced: 0,
@@ -130,6 +149,9 @@ impl SharedState {
         self.phase = SessionPhaseView::Streaming;
         self.session = Some(session);
         self.config = Some(config);
+        self.transport = LOOPBACK_TRANSPORT_NAME;
+        self.peer_name = Some("LadoFlow synthetic display".to_owned());
+        self.last_error = None;
         self.started_at = Some(Instant::now());
         self.latency = LatencyAggregator::new(LATENCY_WINDOW);
         self.frames_produced = 0;
@@ -137,6 +159,35 @@ impl SharedState {
         self.frames_dropped = 0;
         self.frames_superseded = 0;
         self.queue_depth = 0;
+    }
+
+    fn reset_for_usb_negotiation(&mut self, config: LoopbackConfig) {
+        self.phase = SessionPhaseView::Negotiating;
+        self.session = None;
+        self.config = Some(config);
+        self.transport = USB_TRANSPORT_NAME;
+        self.peer_name = None;
+        self.last_error = None;
+        self.started_at = Some(Instant::now());
+        self.latency = LatencyAggregator::new(LATENCY_WINDOW);
+        self.frames_produced = 0;
+        self.frames_presented = 0;
+        self.frames_dropped = 0;
+        self.frames_superseded = 0;
+        self.queue_depth = 0;
+    }
+
+    fn establish_usb_control(
+        &mut self,
+        config: LoopbackConfig,
+        session: Session,
+        peer_name: String,
+    ) {
+        self.phase = SessionPhaseView::Connected;
+        self.session = Some(session);
+        self.config = Some(config);
+        self.peer_name = Some(peer_name);
+        self.last_error = None;
     }
 
     fn snapshot(&self, platform: PlatformStatus) -> HostSnapshot {
@@ -153,9 +204,9 @@ impl SharedState {
             protocol_version: PROTOCOL_VERSION,
             session: SessionSnapshot {
                 phase: self.phase,
-                transport: "In-memory duplex",
-                peer_name: matches!(self.phase, SessionPhaseView::Streaming)
-                    .then_some("LadoFlow synthetic display"),
+                transport: self.transport.to_owned(),
+                peer_name: self.peer_name.clone(),
+                last_error: self.last_error.clone(),
                 configured_width: config.map(|value| value.width),
                 configured_height: config.map(|value| value.height),
                 configured_fps: config.map(|value| value.fps),
@@ -205,6 +256,17 @@ impl DesktopRuntime {
     }
 
     pub fn disconnect_android_usb(&self) -> Result<HostSnapshot, String> {
+        let usb_session_active = {
+            let shared = self.lock_shared();
+            shared.transport == USB_TRANSPORT_NAME
+                && matches!(
+                    shared.phase,
+                    SessionPhaseView::Negotiating | SessionPhaseView::Connected
+                )
+        };
+        if usb_session_active {
+            let _stopped = self.stop()?;
+        }
         self.usb_accessory.disconnect()?;
         Ok(self.snapshot())
     }
@@ -214,7 +276,7 @@ impl DesktopRuntime {
         let mut worker_slot = self.lock_worker();
         if let Some(worker) = worker_slot.as_ref() {
             if !worker.handle.is_finished() {
-                return Err("a loopback session is already running".to_owned());
+                return Err("a display session is already running".to_owned());
             }
         }
         if let Some(finished) = worker_slot.take() {
@@ -224,26 +286,36 @@ impl DesktopRuntime {
                 .map_err(|_| "the previous loopback worker panicked".to_owned())?;
         }
 
-        {
-            let mut shared = self.lock_shared();
-            shared.phase = SessionPhaseView::Negotiating;
-        }
-
-        let session = negotiated_session(config).inspect_err(|_error| {
-            self.lock_shared().phase = SessionPhaseView::Failed;
-        })?;
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let worker_shared = Arc::clone(&self.shared);
-
-        self.lock_shared().reset_for_start(config, session);
-        let handle = thread::Builder::new()
-            .name("ladoflow-loopback".to_owned())
-            .spawn(move || run_loopback(&worker_shared, &worker_cancel, config))
-            .map_err(|error| {
+        let use_usb = self.usb_accessory.connection_state() == ConnectionState::Connected;
+        let handle = if use_usb {
+            self.lock_shared().reset_for_usb_negotiation(config);
+            let usb_transport = self.usb_accessory.clone();
+            thread::Builder::new()
+                .name("ladoflow-usb-session".to_owned())
+                .spawn(move || {
+                    run_usb_control_session(&worker_shared, &worker_cancel, config, usb_transport);
+                })
+                .map_err(|error| {
+                    self.lock_shared().phase = SessionPhaseView::Failed;
+                    format!("failed to start USB session worker: {error}")
+                })?
+        } else {
+            self.lock_shared().phase = SessionPhaseView::Negotiating;
+            let session = negotiated_session(config).inspect_err(|_error| {
                 self.lock_shared().phase = SessionPhaseView::Failed;
-                format!("failed to start loopback worker: {error}")
             })?;
+            self.lock_shared().reset_for_start(config, session);
+            thread::Builder::new()
+                .name("ladoflow-loopback".to_owned())
+                .spawn(move || run_loopback(&worker_shared, &worker_cancel, config))
+                .map_err(|error| {
+                    self.lock_shared().phase = SessionPhaseView::Failed;
+                    format!("failed to start loopback worker: {error}")
+                })?
+        };
         *worker_slot = Some(Worker { cancel, handle });
         drop(worker_slot);
 
@@ -303,6 +375,183 @@ impl Drop for DesktopRuntime {
             let _result = worker.handle.join();
         }
     }
+}
+
+fn run_usb_control_session(
+    shared: &Arc<Mutex<SharedState>>,
+    cancel: &AtomicBool,
+    config: LoopbackConfig,
+    mut transport: UsbAccessoryManager,
+) {
+    let result = run_usb_control_session_inner(shared, cancel, config, &mut transport);
+    if let Err(error) = result {
+        if cancel.load(Ordering::Acquire) {
+            return;
+        }
+        let mut state = lock_arc(shared);
+        if let Some(session) = state.session.as_mut() {
+            let _result = session.transport_lost();
+        }
+        state.phase = SessionPhaseView::Failed;
+        state.last_error = Some(error);
+    }
+}
+
+fn run_usb_control_session_inner(
+    shared: &Arc<Mutex<SharedState>>,
+    cancel: &AtomicBool,
+    config: LoopbackConfig,
+    transport: &mut UsbAccessoryManager,
+) -> Result<(), String> {
+    let protocol_config = HostProtocolConfig::new(config.width, config.height, config.fps)?;
+    let established =
+        negotiate_host_transport(transport, protocol_config, cancel, USB_NEGOTIATION_TIMEOUT)?;
+    let refresh_millihz = established.display_config.refresh_millihz();
+    if refresh_millihz % 1_000 != 0 {
+        return Err(format!(
+            "negotiated refresh rate {refresh_millihz} mHz cannot drive the integer-Hz runtime"
+        ));
+    }
+    let negotiated_config = LoopbackConfig {
+        width: established.display_config.width(),
+        height: established.display_config.height(),
+        fps: u16::try_from(refresh_millihz / 1_000)
+            .map_err(|_| "negotiated refresh rate exceeds the desktop range".to_owned())?,
+    };
+    let mut next_sequence = established.next_sequence;
+    {
+        let mut state = lock_arc(shared);
+        state.establish_usb_control(
+            negotiated_config,
+            established.session,
+            established.peer_name,
+        );
+    }
+
+    let clock_origin = Instant::now();
+    while !cancel.load(Ordering::Acquire) {
+        if transport.connection_state() != ConnectionState::Connected {
+            return Err("Android USB disconnected during the LDFL session".to_owned());
+        }
+        if transport
+            .try_receive(Channel::Media)
+            .map_err(|error| format!("Android USB media receive failed: {error}"))?
+            .is_some()
+        {
+            return Err("Android display sent an unexpected media frame to the host".to_owned());
+        }
+        let Some(packet) = transport
+            .try_receive(Channel::Control)
+            .map_err(|error| format!("Android USB control receive failed: {error}"))?
+        else {
+            thread::sleep(USB_CONTROL_POLL_INTERVAL);
+            continue;
+        };
+        handle_usb_control(
+            shared,
+            cancel,
+            transport,
+            packet,
+            clock_origin,
+            &mut next_sequence,
+        )?;
+    }
+    Ok(())
+}
+
+fn handle_usb_control(
+    shared: &Arc<Mutex<SharedState>>,
+    cancel: &AtomicBool,
+    transport: &mut impl PacketTransport,
+    packet: Packet,
+    clock_origin: Instant,
+    next_sequence: &mut u64,
+) -> Result<(), String> {
+    let packet_len = packet.len();
+    let packet_bytes = packet.into_payload();
+    let DecodeOutcome::Complete { frame, consumed } =
+        WireFrame::decode_prefix(&packet_bytes).map_err(|error| error.to_string())?
+    else {
+        return Err("Android sent a partial LDFL control frame".to_owned());
+    };
+    if consumed != packet_len {
+        return Err("Android control packet contains trailing LDFL bytes".to_owned());
+    }
+    let sequence = frame.header().sequence();
+    let disposition = {
+        let mut state = lock_arc(shared);
+        state
+            .session
+            .as_mut()
+            .ok_or_else(|| "active USB control arrived without a session".to_owned())?
+            .observe_sequence(sequence)
+            .map_err(|error| error.to_string())?
+    };
+    if !matches!(disposition, SequenceDisposition::Accepted { .. }) {
+        return Err(format!(
+            "Android LDFL sequence {sequence} is duplicate or stale"
+        ));
+    }
+
+    match frame.header().kind() {
+        MessageType::Ping => {
+            let request = frame
+                .decode_payload::<Ping>()
+                .map_err(|error| error.to_string())?;
+            let received_at = duration_micros_u64(clock_origin.elapsed());
+            let response = Pong::new(
+                request.token(),
+                request.client_send_timestamp_micros(),
+                received_at,
+                duration_micros_u64(clock_origin.elapsed()),
+            )
+            .map_err(|error| error.to_string())?;
+            send_control_payload(
+                transport,
+                *next_sequence,
+                &response,
+                cancel,
+                USB_CONTROL_SEND_TIMEOUT,
+            )?;
+            *next_sequence = next_sequence
+                .checked_add(1)
+                .ok_or_else(|| "host LDFL sequence is exhausted".to_owned())?;
+        }
+        MessageType::Pong => {
+            frame
+                .decode_payload::<Pong>()
+                .map_err(|error| error.to_string())?;
+        }
+        MessageType::Input => {
+            frame
+                .decode_payload::<InputEvent>()
+                .map_err(|error| error.to_string())?;
+        }
+        MessageType::Telemetry => {
+            let telemetry = frame
+                .decode_payload::<Telemetry>()
+                .map_err(|error| error.to_string())?;
+            let mut state = lock_arc(shared);
+            state.frames_dropped = u64::from(telemetry.dropped_frames());
+            state.queue_depth = usize::from(telemetry.queue_depth());
+        }
+        MessageType::Error => {
+            let error = frame
+                .decode_payload::<ErrorMessage>()
+                .map_err(|decode_error| decode_error.to_string())?;
+            return Err(format!(
+                "Android display reported {:?}: {}",
+                error.code(),
+                error.diagnostic()
+            ));
+        }
+        kind => {
+            return Err(format!(
+                "Android sent unexpected {kind:?} after LDFL negotiation"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn negotiated_session(config: LoopbackConfig) -> Result<Session, String> {
@@ -545,9 +794,21 @@ fn duration_micros_u32(duration: Duration) -> Result<u32, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, time::Duration};
+    use std::{
+        sync::{Arc, Mutex, atomic::AtomicBool},
+        thread,
+        time::{Duration, Instant},
+    };
 
-    use super::{DesktopRuntime, LoopbackConfig, SessionPhaseView};
+    use ladoflow_protocol::{DecodeOutcome, Frame as WireFrame, FrameFlags, Ping, Pong};
+    use ladoflow_transport::{
+        Channel, LoopbackConfig as TransportConfig, Packet, PacketTransport, loopback_pair,
+    };
+
+    use super::{
+        DesktopRuntime, LoopbackConfig, SessionPhaseView, SharedState, handle_usb_control,
+        negotiated_session,
+    };
 
     #[test]
     fn loopback_starts_records_frames_and_stops() {
@@ -580,5 +841,65 @@ mod tests {
             })
             .expect_err("reject invalid refresh rate");
         assert!(error.contains("30 or 60"));
+    }
+
+    #[test]
+    fn active_usb_ping_gets_pong_and_replayed_sequence_is_rejected() {
+        let config = LoopbackConfig {
+            width: 1_920,
+            height: 1_080,
+            fps: 60,
+        };
+        let mut state = SharedState::new();
+        state.establish_usb_control(
+            config,
+            negotiated_session(config).expect("test session"),
+            "LadoFlow Android".to_owned(),
+        );
+        let shared = Arc::new(Mutex::new(state));
+        let (mut host, mut display) = loopback_pair(TransportConfig::default());
+        let request = Ping::new(42, 100);
+        let wire_ping = WireFrame::from_payload(FrameFlags::NONE, 2, &request).expect("Ping frame");
+        let packet = Packet::control(wire_ping.encode());
+        let cancel = AtomicBool::new(false);
+        let mut next_sequence = 3;
+
+        handle_usb_control(
+            &shared,
+            &cancel,
+            &mut host,
+            packet.clone(),
+            Instant::now(),
+            &mut next_sequence,
+        )
+        .expect("Ping is accepted");
+        assert_eq!(next_sequence, 4);
+        let response = display
+            .try_receive(Channel::Control)
+            .expect("link remains connected")
+            .expect("Pong is queued");
+        let DecodeOutcome::Complete { frame, consumed } =
+            WireFrame::decode_prefix(response.payload()).expect("valid Pong frame")
+        else {
+            panic!("Pong packet must be complete");
+        };
+        assert_eq!(consumed, response.len());
+        assert_eq!(frame.header().sequence(), 3);
+        let response = frame.decode_payload::<Pong>().expect("typed Pong");
+        assert_eq!(response.token(), 42);
+        assert_eq!(response.client_send_timestamp_micros(), 100);
+
+        assert!(
+            handle_usb_control(
+                &shared,
+                &cancel,
+                &mut host,
+                packet,
+                Instant::now(),
+                &mut next_sequence,
+            )
+            .expect_err("replayed sequence is rejected")
+            .contains("duplicate or stale")
+        );
     }
 }

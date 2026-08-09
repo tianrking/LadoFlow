@@ -1,5 +1,10 @@
 use serde::Serialize;
 
+#[cfg(not(target_os = "windows"))]
+use ladoflow_transport::{
+    Channel, ConnectionState, Packet, PacketTransport, ReceiveError, SendError, SendReport,
+};
+
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -118,7 +123,7 @@ pub use windows::{
 };
 
 #[cfg(not(target_os = "windows"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct UsbAccessoryManager;
 
 #[cfg(not(target_os = "windows"))]
@@ -138,6 +143,21 @@ impl UsbAccessoryManager {
     #[must_use]
     pub const fn runtime_status(&self) -> Option<(UsbLinkState, String)> {
         None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl PacketTransport for UsbAccessoryManager {
+    fn connection_state(&self) -> ConnectionState {
+        ConnectionState::Disconnected
+    }
+
+    fn try_send(&mut self, packet: Packet) -> Result<SendReport, SendError> {
+        Err(SendError::Disconnected(packet))
+    }
+
+    fn try_receive(&mut self, _channel: Channel) -> Result<Option<Packet>, ReceiveError> {
+        Err(ReceiveError::Disconnected)
     }
 }
 

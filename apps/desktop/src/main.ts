@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 type SessionPhase =
   | "idle"
   | "negotiating"
+  | "connected"
   | "streaming"
   | "recovering"
   | "stopped"
@@ -27,6 +28,7 @@ interface HostSnapshot {
     phase: SessionPhase;
     transport: string;
     peerName: string | null;
+    lastError: string | null;
     configuredWidth: number | null;
     configuredHeight: number | null;
     configuredFps: number | null;
@@ -188,6 +190,13 @@ function sessionPresentation(phase: SessionPhase) {
         label: "Streaming",
         tone: "good" as const,
       };
+    case "connected":
+      return {
+        title: "USB display negotiated",
+        copy: "The host and Android display agreed on LDFL and H.264 settings. The production video source is the next pipeline stage.",
+        label: "Connected",
+        tone: "good" as const,
+      };
     case "recovering":
       return {
         title: "Restoring the display link",
@@ -245,16 +254,22 @@ function renderDisplays(displays: DisplaySource[]) {
 
 function render(snapshot: HostSnapshot) {
   const presentation = sessionPresentation(snapshot.session.phase);
-  const isRunning = snapshot.session.phase === "streaming" || snapshot.session.phase === "negotiating";
+  const isRunning =
+    snapshot.session.phase === "streaming" ||
+    snapshot.session.phase === "connected" ||
+    snapshot.session.phase === "negotiating";
 
   elements.appVersion.textContent = `LadoFlow ${snapshot.appVersion}`;
   elements.hostPlatform.textContent = formatPlatform(snapshot);
   elements.hostStatusDot.className = "status-dot status-dot--cyan";
   elements.protocolVersion.textContent = `LDFL v${snapshot.protocolVersion}`;
   elements.sessionTitle.textContent = presentation.title;
-  elements.sessionCopy.textContent = presentation.copy;
+  elements.sessionCopy.textContent = snapshot.session.lastError ?? presentation.copy;
   setBadge(elements.sessionBadge, presentation.label, presentation.tone);
-  elements.linkPath.classList.toggle("is-active", snapshot.session.phase === "streaming");
+  elements.linkPath.classList.toggle(
+    "is-active",
+    snapshot.session.phase === "streaming" || snapshot.session.phase === "connected",
+  );
   elements.start.disabled = busy || isRunning;
   elements.stop.disabled = busy || !isRunning;
   elements.resolution.disabled = isRunning;
@@ -281,7 +296,8 @@ function render(snapshot: HostSnapshot) {
   elements.runCaptureProbe.disabled = busy;
   const usbConnected = snapshot.platform.usbLinkState === "connected";
   elements.prepareAndroidUsb.hidden = snapshot.os !== "windows" || usbConnected;
-  elements.prepareAndroidUsb.disabled = busy || snapshot.platform.usbLinkState === "connecting";
+  elements.prepareAndroidUsb.disabled =
+    busy || isRunning || snapshot.platform.usbLinkState === "connecting";
   elements.disconnectAndroidUsb.hidden = snapshot.os !== "windows" || !usbConnected;
   elements.disconnectAndroidUsb.disabled = busy;
   selectedDisplayId =

@@ -119,11 +119,14 @@ claim the app interface before reporting readiness.
 4. [x] Keep the claimed handle open in a cancellable duplex worker, prioritize
    control between complete frames, cap writes at 64 KiB, retry short writes,
    and feed 64 KiB reads into the bounded LDFL incremental decoder.
-5. [ ] Compose the worker's bounded host endpoint into the production runtime
-   so negotiated control and encoded video actually use the USB link.
-6. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
+5. [x] Compose the worker's bounded host endpoint into the runtime for
+   Hello/Capabilities/DisplayConfig, monotonic peer sequencing, Ping/Pong,
+   typed active control, cancellation, timeout, and failure diagnostics.
+6. [ ] Feed real encoded video into that established USB session; never send
+   the loopback's synthetic proof bytes as H.264.
+7. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
    physical Android device.
-7. [ ] Replace development driver setup with a signed, installer-managed
+8. [ ] Replace development driver setup with a signed, installer-managed
    WinUSB-compatible binding and verify rollback/uninstall.
 
 The AOA request and product-ID values follow the

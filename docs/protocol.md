@@ -28,6 +28,22 @@ The wire protocol is transport-independent. USB and LAN adapters carry the same 
 
 Version one defines typed payloads for every family in this table. Pairing authentication and encryption remain later protocol extensions.
 
+### Session opening order
+
+Sequence numbers are monotonic per sender across control and media. The host
+opens a fresh connection with `Hello` sequence `0` followed by `Capabilities`
+sequence `1`. The display replies with exactly one of each; their arrival order
+may differ, but its own sequence must continue increasing. After role, version,
+codec, dimension, refresh, and bitrate intersection succeeds, the host sends
+`DisplayConfig` sequence `2`. No media is legal before that configuration.
+Later host control responses consume the same sequence space, so video starts
+at the next unused value rather than assuming it is always `3`.
+
+The current desktop production boundary advertises H.264, selects H.264 Main,
+and chooses 60 Hz when both endpoints support it or 30 Hz as the compatibility
+fallback. A display below 30 Hz is rejected by this runtime instead of silently
+creating an unsupported fractional refresh configuration.
+
 ## Version-one frame header
 
 Every integer uses network byte order. The decoder validates the complete header before allocating payload storage.

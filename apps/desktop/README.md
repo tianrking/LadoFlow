@@ -51,6 +51,17 @@ into this worker. This path has not been verified with a physical Android device
 and Windows may need a signed WinUSB-compatible binding before libusb can access
 the interface.
 
+When the bulk link is connected, **Start session** selects the USB endpoint
+instead of the local proof endpoint. It sends Host Hello and Capabilities,
+accepts the display messages in either order while enforcing monotonically
+increasing peer sequence numbers, computes a bounded H.264 Main configuration,
+and sends DisplayConfig before entering the connected state. The host nonce is
+filled from the operating-system random source. Active control traffic is
+decoded and bounded; Ping receives Pong, Android Error fails the session, and
+Input/Telemetry are validated without yet injecting native Windows input. This
+is a real control-plane path, but it intentionally does not send the synthetic
+non-H.264 payload to Android.
+
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).
 

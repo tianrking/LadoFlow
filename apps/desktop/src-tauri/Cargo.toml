@@ -21,6 +21,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+getrandom = "0.3.4"
 ladoflow-core = { path = "../../../crates/ladoflow-core" }
 ladoflow-media = { path = "../../../crates/ladoflow-media" }
 ladoflow-protocol = { path = "../../../crates/ladoflow-protocol" }

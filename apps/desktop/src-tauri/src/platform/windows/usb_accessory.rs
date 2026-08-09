@@ -19,8 +19,8 @@ use ladoflow_protocol::{
 };
 use ladoflow_transport::{
     AccessoryControlIo, AccessoryIdentity, AoaNegotiationError, Channel, ConnectionState,
-    LoopbackConfig, LoopbackEndpoint, Packet, PacketTransport, QueueLimits, is_aoa_app_accessory,
-    loopback_pair, negotiate_accessory_mode,
+    LoopbackConfig, LoopbackEndpoint, Packet, PacketTransport, QueueLimits, ReceiveError,
+    SendError, SendReport, is_aoa_app_accessory, loopback_pair, negotiate_accessory_mode,
 };
 use rusb::{ConfigDescriptor, Context, Device, DeviceHandle, Direction, TransferType, UsbContext};
 
@@ -112,8 +112,13 @@ struct OpenedAccessory {
     endpoints: BulkEndpoints,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct UsbAccessoryManager {
+    inner: Arc<UsbAccessoryManagerInner>,
+}
+
+#[derive(Debug, Default)]
+struct UsbAccessoryManagerInner {
     session: Mutex<Option<AccessorySession>>,
     status: Arc<Mutex<LinkStatus>>,
 }
@@ -173,7 +178,7 @@ impl UsbAccessoryManager {
             }
         };
         let mut report = opened.report.clone();
-        match start_bulk_session(opened, &self.status) {
+        match start_bulk_session(opened, &self.inner.status) {
             Ok(session) => {
                 *self.lock_session() = Some(session);
                 "connected".clone_into(&mut report.state);
@@ -238,13 +243,15 @@ impl UsbAccessoryManager {
     }
 
     fn lock_session(&self) -> MutexGuard<'_, Option<AccessorySession>> {
-        self.session
+        self.inner
+            .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn lock_status(&self) -> MutexGuard<'_, LinkStatus> {
-        self.status
+        self.inner
+            .status
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -254,7 +261,33 @@ impl UsbAccessoryManager {
     }
 }
 
-impl Drop for UsbAccessoryManager {
+impl PacketTransport for UsbAccessoryManager {
+    fn connection_state(&self) -> ConnectionState {
+        self.lock_session()
+            .as_ref()
+            .map_or(ConnectionState::Disconnected, |session| {
+                session.host_endpoint.connection_state()
+            })
+    }
+
+    fn try_send(&mut self, packet: Packet) -> Result<SendReport, SendError> {
+        let mut session = self.lock_session();
+        let Some(session) = session.as_mut() else {
+            return Err(SendError::Disconnected(packet));
+        };
+        session.host_endpoint.try_send(packet)
+    }
+
+    fn try_receive(&mut self, channel: Channel) -> Result<Option<Packet>, ReceiveError> {
+        let mut session = self.lock_session();
+        let Some(session) = session.as_mut() else {
+            return Err(ReceiveError::Disconnected);
+        };
+        session.host_endpoint.try_receive(channel)
+    }
+}
+
+impl Drop for UsbAccessoryManagerInner {
     fn drop(&mut self) {
         let session = self
             .session

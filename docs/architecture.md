@@ -63,10 +63,16 @@ flowchart LR
 ```
 
 This path exercises the shared contracts end to end without pretending to be a
-usable second display. Native frame sources will replace `SyntheticFrameProducer`;
-The verified AOA mode-switch and bounded bulk-transfer worker will replace the
-loopback pair after its host endpoint is composed into the runtime; neither USB
+usable second display. Native frame sources will replace `SyntheticFrameProducer`.
+The verified AOA mode-switch and bounded bulk-transfer worker is already
+composed into the runtime for `Hello(0)`, `Capabilities(1)`, peer negotiation,
+and `DisplayConfig(2)`. Actual encoded media is not enqueued yet; neither USB
 nor a later LAN adapter should change session or wire semantics.
+
+The USB control path enforces monotonically increasing sequence numbers per
+sender, uses an operating-system random session nonce, validates active
+Input/Telemetry/Ping/Pong/Error frames, and reports failures to the desktop UI.
+Synthetic proof bytes are never mislabeled as H.264 on the physical link.
 
 The implementation lives in these ownership boundaries:
 
