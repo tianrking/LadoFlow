@@ -47,6 +47,18 @@ but it does not silently reinterpret the wire flag.
 - Surface loss, display reconfiguration, EOS, and codec errors release native
   codec resources and require a fresh keyframe before recovery.
 
+The application-level display session owns a generation-numbered Surface
+controller. Each Activity/Compose `SurfaceView` receives one lease. Replacing a
+Surface installs the newer generation immediately; a delayed `surfaceDestroyed`
+or composition dispose from the old Activity can release only its stale lease
+and cannot clear the newer decoder Surface. `surfaceChanged` records positive
+local view width/height on the active lease without rebuilding MediaCodec.
+
+A local portrait/landscape or window-size change affects Surface scaling and
+input mapping only. It does not invent a rotation/size field on the wire. A
+change to the coded video dimensions still uses the existing compatible
+`DisplayConfig`, followed by SPS/PPS and a frame marked `KEYFRAME`.
+
 `OutputReleasedToSurface` means MediaCodec handed a decoded buffer to the
 Surface. It deliberately does not claim that the device panel presented the
 frame; physical presentation and latency require device-side measurements. The
@@ -55,8 +67,9 @@ gate and MediaCodec timestamp correlation so session telemetry can report it.
 
 ## Evidence boundary
 
-The Annex-B parser, recovery gate, session Surface gate, and capability contract
-are covered by local JVM tests or compilation against API 36. No phone or tablet
-has decoded this stream yet.
+The Annex-B parser, recovery gate, session Surface gate, capability contract,
+stale-lease protection, local portrait/landscape resize, and Activity recreation
+ownership are covered by JVM or Android instrumentation tests. No phone or
+tablet has decoded this stream yet.
 
 **未实机验证 / Not verified on a physical Android device.**

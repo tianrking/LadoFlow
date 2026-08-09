@@ -75,6 +75,55 @@ class AndroidDisplaySessionTest {
     }
 
     @Test
+    fun detachResetsActiveSessionAndExposesDeviceDisconnectedState() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+
+        harness.transport.mutableState.value = UsbTransportState.Detached(accessoryIdentity())
+
+        eventually {
+            harness.session.state.value is AndroidDisplaySessionState.DeviceDisconnected
+        }
+        val state = harness.session.state.value as AndroidDisplaySessionState.DeviceDisconnected
+        assertEquals("Test PC", state.accessoryName)
+        assertTrue(harness.decoder.resetReasons.contains("USB accessory detached"))
+        assertEquals(AndroidDisplaySessionMetrics(), harness.session.metrics.value)
+    }
+
+    @Test
+    fun reconnectStartsFreshHandshakeAndAcceptsFreshHostSequencesInSameProcess() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+
+        harness.transport.mutableState.value = UsbTransportState.Recovering(
+            accessory = accessoryIdentity(),
+            attempt = 1,
+            delayMillis = 250,
+            reason = "simulated read failure",
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Recovering }
+        assertTrue(harness.decoder.resetReasons.contains("USB link recovering"))
+
+        harness.transport.mutableState.value = UsbTransportState.Connected(accessoryIdentity())
+        val hello = harness.transport.nextSent()
+        val capabilities = harness.transport.nextSent()
+        assertEquals(listOf(0uL, 1uL), listOf(hello.sequence, capabilities.sequence))
+
+        harness.transport.framesMutable.emit(hostHelloFrame(sequence = 0u))
+        harness.transport.framesMutable.emit(hostCapabilitiesFrame(sequence = 1u))
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.decoder.configurations.size == 2 }
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
+        assertEquals(2, harness.decoder.configurations.size)
+    }
+
+    @Test
     fun validHandshakeConfigAndSurfaceGateMediaBeforeDisplaying() = runTest {
         val harness = Harness(backgroundScope)
         harness.connectAndNegotiate()
@@ -106,6 +155,10 @@ class AndroidDisplaySessionTest {
 
         harness.transport.framesMutable.emit(videoFrame(sequence = 2u, keyframe = true))
         eventually { harness.session.state.value is AndroidDisplaySessionState.Failed }
+        assertEquals(
+            DisplaySessionFailureKind.Protocol,
+            (harness.session.state.value as AndroidDisplaySessionState.Failed).kind,
+        )
         val error = harness.transport.nextSent().decodePayload() as RemoteErrorPayload
 
         assertEquals(RemoteErrorCode.ConfigurationRejected, error.code)
@@ -372,6 +425,7 @@ class AndroidDisplaySessionTest {
         val eventsMutable = MutableSharedFlow<VideoDecoderEvent>(extraBufferCapacity = 16)
         val configurations = mutableListOf<DisplayConfigPayload>()
         val submitted = mutableListOf<LdflFrame>()
+        val resetReasons = mutableListOf<String>()
         override val state: StateFlow<VideoDecoderState> = mutableState.asStateFlow()
         override val events: SharedFlow<VideoDecoderEvent> = eventsMutable.asSharedFlow()
         override val queueDepth: StateFlow<Int> = mutableQueueDepth.asStateFlow()
@@ -386,6 +440,7 @@ class AndroidDisplaySessionTest {
         override fun submit(frame: LdflFrame): Boolean = submitted.add(frame)
 
         override fun reset(reason: String) {
+            resetReasons += reason
             mutableState.value = VideoDecoderState.Idle
         }
 

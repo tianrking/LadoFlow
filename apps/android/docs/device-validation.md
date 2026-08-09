@@ -56,9 +56,10 @@ or below 64 KiB.
    cable and start the PC host.
 3. Confirm Android shows the system accessory permission dialog. Exercise both
    denial/retry and approval once.
-4. Confirm the UI progresses through authorization, handshake, configured,
-   Surface-ready Connected, and Displaying only after the first MediaCodec output
-   is released to Surface.
+4. Confirm the UI explicitly shows `Waiting for authorization`, `Connected`,
+   `Reconnecting`, `Protocol error`, and `Device disconnected` for those real
+   states. `Displaying` may appear only after the first MediaCodec output is
+   released to Surface.
 5. Confirm Host sequence `0/1/2` negotiates H.264 Main within the Android
    advertised size/rate/bitrate. The app must fail closed on a deliberately
    duplicated sequence and on VideoFrame before DisplayConfig.
@@ -66,9 +67,11 @@ or below 64 KiB.
    permits. Do not force the PC encoder's full
    1280x800/1920x1080/2560x1440/2732x2048 matrix above the device's advertised
    maximum.
-7. Verify SPS/PPS plus the LDFL `KEYFRAME` starts decode, P-frame access-unit
-   boundaries are retained, and Surface loss/recreation waits for a fresh
-   keyframe.
+7. Verify SPS/PPS plus the LDFL `KEYFRAME` starts decode and P-frame access-unit
+   boundaries are retained. Recreate the Activity, rotate portrait/landscape,
+   and change the available window size while streaming. Confirm a stale old
+   Surface destruction cannot clear the new Surface and each real Surface
+   replacement waits for a fresh keyframe.
 8. Confirm each Host `VideoFrame.metadata.frame_id` equals its global LDFL
    header `sequence`. Compare Android Telemetry `frame_id` with the latest Host
    frame ID actually released by MediaCodec to Surface. Compare `dropped_frames`
@@ -78,8 +81,11 @@ or below 64 KiB.
 9. Exercise touch begin/move/end/cancel, mouse move/buttons/wheel, physical
    keyboard down/up with modifiers, focus loss, rotation/resolution
    reconfiguration, explicit disconnect, cable detach, foreground/background,
-   and reconnect. Confirm the Host advertises each input family before Android
-   sends it and releases tracked input state after focus loss or disconnect.
+   and reconnect. After both transient I/O recovery and detach/reattach in the
+   same Android process, confirm a fresh Host `Hello/0`, `Capabilities/1`, and
+   `DisplayConfig/2` is accepted. Confirm the Host advertises each input family
+   before Android sends it and releases tracked input state after focus loss or
+   disconnect.
 10. Run at least 30 minutes at the negotiated 60 Hz or downgraded 30 Hz. Record
     frame count, drops, maximum queue depth, decoder failures, reconnects,
     thermal state, and any visible corruption or latency observation.
@@ -98,7 +104,8 @@ or below 64 KiB.
 | Duration | |
 | Host frames / Android Surface releases | |
 | Dropped frames / max queue depth | |
-| Permission, detach, reconnect result | |
+| Permission, detach, in-process reconnect result | |
+| Activity rebuild / Surface generation / resize result | |
 | Touch / mouse / rotation result | |
 | Logs, video, screenshots, trace paths | |
 | Verdict and remaining failures | |

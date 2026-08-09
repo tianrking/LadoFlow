@@ -2,12 +2,14 @@ package dev.ladoflow.display.ui
 
 enum class ConnectionStage {
     Disconnected,
+    DeviceDisconnected,
     WaitingForAccessory,
     WaitingForPermission,
     Pairing,
     Connected,
     Displaying,
     Recovering,
+    ProtocolError,
     Error,
 }
 
@@ -93,6 +95,10 @@ sealed interface DisplayEvent {
     data object RecoverySucceeded : DisplayEvent
 
     data class Failed(val reason: String) : DisplayEvent
+
+    data class ProtocolFailed(val reason: String) : DisplayEvent
+
+    data class DeviceDisconnected(val accessoryName: String?) : DisplayEvent
 
     data object Disconnected : DisplayEvent
 
@@ -188,7 +194,7 @@ object DisplayStateMachine {
 
         is DisplayEvent.LinkInterrupted -> state.copy(
             stage = ConnectionStage.Recovering,
-            detail = "The USB stream paused. Reconnecting without discarding the session.",
+            detail = "The USB stream paused. Reconnecting with a fresh LDFL handshake.",
             recoveryAttempt = 1,
             lastError = event.reason,
         )
@@ -212,6 +218,20 @@ object DisplayStateMachine {
             detail = "LadoFlow could not continue this display session.",
             stream = null,
             lastError = event.reason,
+        )
+
+        is DisplayEvent.ProtocolFailed -> state.copy(
+            stage = ConnectionStage.ProtocolError,
+            detail = "The host sent data that does not match the LDFL v1 session contract.",
+            stream = null,
+            lastError = event.reason,
+        )
+
+        is DisplayEvent.DeviceDisconnected -> DisplayUiState(
+            stage = ConnectionStage.DeviceDisconnected,
+            accessoryName = event.accessoryName,
+            detail = "The USB accessory was detached. Reconnect the cable to start a new session.",
+            preferences = state.preferences,
         )
 
         DisplayEvent.Disconnected -> DisplayUiState(

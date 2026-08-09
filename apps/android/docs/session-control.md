@@ -49,6 +49,20 @@ before DisplayConfig all fail closed and enqueue an LDFL Error when the USB
 writer is still available. A host Error transitions the Android session to
 `Failed`.
 
+## Detach and reconnect generation
+
+Transport recovery resets the peer Hello/Capabilities, active configuration,
+decoder gate, input viewport, telemetry counters, and both sequence validators.
+When the descriptor reopens, Android sends a new `Hello/0` and
+`Capabilities/1`; the Host may likewise send a new `Hello/0`, `Capabilities/1`,
+and `DisplayConfig/2`. Frames from a previous generation cannot be accepted by
+the new outbound writer closure.
+
+The Android UI classifies a physical accessory detach separately from bounded
+I/O recovery. It also classifies LDFL validation failures as `Protocol error`
+instead of a generic transport failure. These are local state/UI distinctions;
+they add no LDFL field, flag, message, or compatibility rule.
+
 Telemetry `frame_id` is the Host `VideoFrame.metadata.frame_id` most recently
 released by MediaCodec to the Surface, never a locally guessed ordinal.
 `dropped_frames` is cumulative for the current USB/LDFL session. `queue_depth`
@@ -60,7 +74,8 @@ pending input or waiting for output release.
 Local JVM tests cover negotiation, exact reply identity and numbering,
 configuration and Surface gates, cross-family duplicate sequence rejection,
 priority-before-numbering, negotiated keyboard Input numbering, rejection of
-an input family absent from the Host mask, and failure paths. MediaCodec
+an input family absent from the Host mask, detach, same-process reconnect with
+fresh `0/1/2` Host numbering, and classified failure paths. MediaCodec
 capability enumeration and actual Surface decode require an Android runtime.
 
 **未实机验证 / Not verified on a physical Android device.**

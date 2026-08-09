@@ -7,13 +7,13 @@ options, accounts, and a cloud relay are not part of the display path.
 
 ## Implemented boundary
 
-- Product UI for waiting, Android permission, LDFL handshake, configured,
-  Surface-ready Connected, Displaying, recovery, disconnect, and error states.
+- Product UI explicitly distinguishes waiting for authorization, Connected,
+  reconnecting, protocol error, physical device detach, and user disconnect.
 - Exact LDFL v1 framing and all typed payloads from `docs/protocol.md`, including
   golden vectors, split/coalesced reads, corrupt input, and bounded decoding.
 - AOA attach filter, temporary permission, duplex `ParcelFileDescriptor`, 64 KiB
   incremental reads, finite queues, descriptor-close cancellation, detach, and
-  bounded reconnect.
+  bounded in-process reconnect with a fresh LDFL generation.
 - One global sender sequence across every message family. Outbound priority is
   decided before numbering; numbered frames enter one FIFO writer. Inbound
   control/media wire order is retained and duplicate/stale sequence values fail
@@ -24,7 +24,9 @@ options, accounts, and a cloud relay are not part of the display path.
   validation before MediaCodec configuration.
 - Asynchronous MediaCodec Surface decode boundary with Annex-B SPS/PPS parsing,
   keyframe gating, three-access-unit bounds, Surface recreation, and low-latency
-  feature negotiation when the platform reports it.
+  feature negotiation when the platform reports it. A process-owned Surface
+  lease prevents a destroyed Activity from clearing a newer Surface, while
+  local orientation/size changes remain outside the wire protocol.
 - Pointer, touch, and physical-keyboard return through LDFL Input. The
   focusable decoder SurfaceView forwards key down/up as USB HID usages, and the
   session sends only input families advertised by both endpoints.

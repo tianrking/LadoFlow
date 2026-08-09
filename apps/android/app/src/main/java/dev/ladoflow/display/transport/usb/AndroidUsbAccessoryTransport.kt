@@ -87,18 +87,20 @@ class AndroidUsbAccessoryTransport(
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_DETACHED) return
             val detached = intent.usbAccessory() ?: return
-            if (detached != currentAccessory) return
-            if (isAttached(detached)) return
+            val detachedIdentity = detached.identity()
+            val detachedState = resolveUsbDetachState(
+                current = currentAccessory?.identity(),
+                detached = detachedIdentity,
+                stillAttached = isAttached(detached),
+                foreground = foreground,
+                userPaused = userPaused,
+            ) ?: return
             permissionRequestInFlight = false
             currentAccessory = null
             reconnectAttempt = 0
             cancelConnectionWork()
             closeActiveSession()
-            mutableState.value = if (foreground && !userPaused) {
-                UsbTransportState.WaitingForAccessory
-            } else {
-                UsbTransportState.Stopped
-            }
+            mutableState.value = detachedState
         }
     }
 

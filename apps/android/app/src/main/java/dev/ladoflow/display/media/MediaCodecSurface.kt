@@ -13,28 +13,11 @@ import dev.ladoflow.display.input.AndroidInputController
 /** Compose-owned SurfaceView that forwards Surface lifecycle and input events. */
 @Composable
 fun MediaCodecSurface(
-    decoder: VideoDecoder,
+    surfaceController: DecoderSurfaceController,
     modifier: Modifier = Modifier,
     inputController: AndroidInputController? = null,
 ) {
-    val callback = remember(decoder) {
-        object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                decoder.setOutputSurface(holder.surface)
-            }
-
-            override fun surfaceChanged(
-                holder: SurfaceHolder,
-                format: Int,
-                width: Int,
-                height: Int,
-            ) = Unit
-
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                decoder.setOutputSurface(null)
-            }
-        }
-    }
+    val callback = remember(surfaceController) { DecoderSurfaceCallback(surfaceController) }
 
     AndroidView(
         factory = { context ->
@@ -47,8 +30,37 @@ fun MediaCodecSurface(
         modifier = modifier,
     )
 
-    DisposableEffect(decoder, callback) {
-        onDispose { decoder.setOutputSurface(null) }
+    DisposableEffect(surfaceController, callback) {
+        onDispose { callback.release() }
+    }
+}
+
+internal class DecoderSurfaceCallback(
+    private val surfaceController: DecoderSurfaceController,
+) : SurfaceHolder.Callback {
+    private var lease: DecoderSurfaceLease? = null
+
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        release()
+        lease = surfaceController.attach(holder.surface)
+    }
+
+    override fun surfaceChanged(
+        holder: SurfaceHolder,
+        format: Int,
+        width: Int,
+        height: Int,
+    ) {
+        lease?.let { surfaceController.resize(it, width, height) }
+    }
+
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        release()
+    }
+
+    fun release() {
+        lease?.let(surfaceController::detach)
+        lease = null
     }
 }
 

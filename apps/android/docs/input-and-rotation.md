@@ -43,6 +43,12 @@ clamped so its matching end/cancel can still be sent. Pure Kotlin tests cover
 letterboxing, all four quarter turns, u16/contact bounds, and landscape-to-
 portrait resolution changes.
 
+`SurfaceHolder.surfaceChanged` updates the current local view dimensions. A
+portrait/landscape Activity or multi-window resize keeps the same negotiated
+coded viewport and Surface lease generation; the mapping recalculates from the
+new view bounds. A stale Surface callback from the destroyed Activity is ignored
+after a newer lease attaches.
+
 LDFL v1 advertises `DYNAMIC_ROTATION` as a capability but defines no standalone
 rotation payload. Therefore the current interoperable mode change is a new
 `DisplayConfig` with the new coded width/height followed by fresh Annex-B
@@ -54,8 +60,9 @@ is never serialized as an invented protocol extension.
 ## Evidence boundary
 
 Coordinate/contact/HID mapping and the negotiated keyboard send/drop paths are
-covered by local JVM tests. An Android instrumentation test dispatches key
-down/up through an actual SurfaceView listener. Physical multi-touch, mouse,
-keyboard, rotation, and remote host injection have not been exercised.
+covered by local JVM tests. Android instrumentation dispatches key down/up
+through an actual SurfaceView listener and rebuilds/resizes that Surface in
+portrait and landscape layouts. Physical multi-touch, mouse, keyboard,
+rotation, and remote host injection have not been exercised.
 
 **未实机验证 / Not verified on a physical Android device.**

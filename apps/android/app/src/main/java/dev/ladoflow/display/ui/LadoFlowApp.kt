@@ -78,12 +78,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.ladoflow.display.input.AndroidInputController
 import dev.ladoflow.display.media.AndroidDisplayCapabilityEvidence
+import dev.ladoflow.display.media.DecoderSurfaceController
 import dev.ladoflow.display.media.MediaCodecSurface
-import dev.ladoflow.display.media.VideoDecoder
 import dev.ladoflow.display.protocol.DisplayConfigPayload
 import dev.ladoflow.display.session.AndroidDisplaySession
 import dev.ladoflow.display.session.AndroidDisplaySessionMetrics
 import dev.ladoflow.display.session.AndroidDisplaySessionState
+import dev.ladoflow.display.session.DisplaySessionFailureKind
 import dev.ladoflow.display.ui.theme.LadoCoral
 import dev.ladoflow.display.ui.theme.LadoCyan
 import dev.ladoflow.display.ui.theme.LadoFlowTheme
@@ -135,7 +136,7 @@ fun LadoFlowApp(
 
     LadoFlowApp(
         state = state,
-        decoder = session?.decoder,
+        surfaceController = session?.surfaceController,
         inputController = session?.inputController,
         capabilityEvidence = capabilityEvidence,
         onEvent = { event ->
@@ -167,12 +168,17 @@ private fun AndroidDisplaySessionState.toDisplayEvent(): DisplayEvent = when (th
         configuration.toUiConfiguration(),
         hostName,
     )
+    is AndroidDisplaySessionState.DeviceDisconnected ->
+        DisplayEvent.DeviceDisconnected(accessoryName)
     is AndroidDisplaySessionState.Displaying -> DisplayEvent.StreamStarted(
         configuration.toUiConfiguration(),
         hostName,
     )
     is AndroidDisplaySessionState.Recovering -> DisplayEvent.RecoveryAttempted(attempt, reason)
-    is AndroidDisplaySessionState.Failed -> DisplayEvent.Failed(reason)
+    is AndroidDisplaySessionState.Failed -> when (kind) {
+        DisplaySessionFailureKind.Protocol -> DisplayEvent.ProtocolFailed(reason)
+        else -> DisplayEvent.Failed(reason)
+    }
     is AndroidDisplaySessionState.Unsupported -> DisplayEvent.Failed(reason)
 }
 
@@ -193,7 +199,7 @@ private fun AndroidDisplaySessionMetrics.toUiMetrics(): StreamMetrics = StreamMe
 @Composable
 internal fun LadoFlowApp(
     state: DisplayUiState,
-    decoder: VideoDecoder? = null,
+    surfaceController: DecoderSurfaceController? = null,
     inputController: AndroidInputController? = null,
     capabilityEvidence: AndroidDisplayCapabilityEvidence? = null,
     onEvent: (DisplayEvent) -> Unit,
@@ -233,7 +239,7 @@ internal fun LadoFlowApp(
                         when (destination) {
                             Destination.Display -> DisplayScreen(
                                 state,
-                                decoder,
+                                surfaceController,
                                 inputController,
                                 onEvent,
                             )
@@ -364,7 +370,7 @@ private fun DestinationRail(
 @Composable
 private fun DisplayScreen(
     state: DisplayUiState,
-    decoder: VideoDecoder?,
+    surfaceController: DecoderSurfaceController?,
     inputController: AndroidInputController?,
     onEvent: (DisplayEvent) -> Unit,
 ) {
@@ -379,8 +385,8 @@ private fun DisplayScreen(
             modifier = Modifier.widthIn(max = 1040.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            if (state.stream != null && decoder != null) {
-                DisplaySurfaceCard(state, decoder, inputController)
+            if (state.stream != null && surfaceController != null) {
+                DisplaySurfaceCard(state, surfaceController, inputController)
                 ActiveSessionControls(state, onEvent)
             } else {
                 ConnectionHero(state, onEvent)
@@ -474,7 +480,9 @@ private fun ConnectionHero(
 
             when (state.stage) {
                 ConnectionStage.Disconnected,
+                ConnectionStage.DeviceDisconnected,
                 ConnectionStage.WaitingForAccessory,
+                ConnectionStage.ProtocolError,
                 ConnectionStage.Error,
                 -> {
                     Spacer(Modifier.height(22.dp))
@@ -528,6 +536,8 @@ private fun StageOrb(stage: ConnectionStage) {
                 ConnectionStage.WaitingForPermission,
                 -> Icons.Outlined.Cable
 
+                ConnectionStage.DeviceDisconnected,
+                ConnectionStage.ProtocolError,
                 ConnectionStage.Error,
                 ConnectionStage.Disconnected,
                 -> Icons.Outlined.Usb
@@ -544,7 +554,7 @@ private fun StageOrb(stage: ConnectionStage) {
 @Composable
 private fun DisplaySurfaceCard(
     state: DisplayUiState,
-    decoder: VideoDecoder,
+    surfaceController: DecoderSurfaceController,
     inputController: AndroidInputController?,
 ) {
     val stream = requireNotNull(state.stream)
@@ -561,7 +571,7 @@ private fun DisplaySurfaceCard(
             contentAlignment = Alignment.Center,
         ) {
             MediaCodecSurface(
-                decoder = decoder,
+                surfaceController = surfaceController,
                 inputController = inputController,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -639,13 +649,13 @@ private fun ConnectionJourney(stage: ConnectionStage) {
                 index = 1,
                 title = "Connect the cable",
                 detail = "Use a data-capable USB cable between this device and the host.",
-                complete = stage.ordinal >= ConnectionStage.WaitingForPermission.ordinal,
+                complete = stage.hasAccessoryConnection(),
             )
             JourneyStep(
                 index = 2,
                 title = "Approve LadoFlow",
                 detail = "Android asks before opening the USB accessory.",
-                complete = stage.ordinal >= ConnectionStage.Pairing.ordinal,
+                complete = stage.hasUsbAuthorization(),
             )
             JourneyStep(
                 index = 3,
@@ -953,23 +963,27 @@ private fun QualityMode.label(): String = when (this) {
 
 private fun stageLabel(stage: ConnectionStage): String = when (stage) {
     ConnectionStage.Disconnected -> "Disconnected"
+    ConnectionStage.DeviceDisconnected -> "Device disconnected"
     ConnectionStage.WaitingForAccessory -> "USB ready"
-    ConnectionStage.WaitingForPermission -> "Authorization"
+    ConnectionStage.WaitingForPermission -> "Waiting for authorization"
     ConnectionStage.Pairing -> "Pairing"
     ConnectionStage.Connected -> "Connected"
     ConnectionStage.Displaying -> "Displaying"
-    ConnectionStage.Recovering -> "Recovering"
+    ConnectionStage.Recovering -> "Reconnecting"
+    ConnectionStage.ProtocolError -> "Protocol error"
     ConnectionStage.Error -> "Needs attention"
 }
 
 private fun stageHeadline(stage: ConnectionStage): String = when (stage) {
     ConnectionStage.Disconnected -> "Host disconnected"
+    ConnectionStage.DeviceDisconnected -> "Device disconnected"
     ConnectionStage.WaitingForAccessory -> "Connect your computer"
-    ConnectionStage.WaitingForPermission -> "Approve this USB accessory"
+    ConnectionStage.WaitingForPermission -> "Waiting for authorization"
     ConnectionStage.Pairing -> "Pairing with your host"
-    ConnectionStage.Connected -> "USB connection ready"
+    ConnectionStage.Connected -> "Connected"
     ConnectionStage.Displaying -> "Extended display active"
-    ConnectionStage.Recovering -> "Restoring your display"
+    ConnectionStage.Recovering -> "Reconnecting"
+    ConnectionStage.ProtocolError -> "Protocol error"
     ConnectionStage.Error -> "Connection needs attention"
 }
 
@@ -983,9 +997,47 @@ private fun stageColor(stage: ConnectionStage): Color = when (stage) {
     ConnectionStage.WaitingForPermission,
     -> Color(0xFFFFC857)
 
-    ConnectionStage.Error -> Color(0xFFFF8A80)
-    ConnectionStage.Disconnected -> Color(0xFF8FA3B2)
+    ConnectionStage.ProtocolError,
+    ConnectionStage.Error,
+    -> Color(0xFFFF8A80)
+
+    ConnectionStage.DeviceDisconnected,
+    ConnectionStage.Disconnected,
+    -> Color(0xFF8FA3B2)
+
     ConnectionStage.WaitingForAccessory -> Color(0xFF78A9FF)
+}
+
+private fun ConnectionStage.hasAccessoryConnection(): Boolean = when (this) {
+    ConnectionStage.WaitingForPermission,
+    ConnectionStage.Pairing,
+    ConnectionStage.Connected,
+    ConnectionStage.Displaying,
+    ConnectionStage.Recovering,
+    ConnectionStage.ProtocolError,
+    ConnectionStage.Error,
+    -> true
+
+    ConnectionStage.Disconnected,
+    ConnectionStage.DeviceDisconnected,
+    ConnectionStage.WaitingForAccessory,
+    -> false
+}
+
+private fun ConnectionStage.hasUsbAuthorization(): Boolean = when (this) {
+    ConnectionStage.Pairing,
+    ConnectionStage.Connected,
+    ConnectionStage.Displaying,
+    ConnectionStage.Recovering,
+    ConnectionStage.ProtocolError,
+    -> true
+
+    ConnectionStage.Disconnected,
+    ConnectionStage.DeviceDisconnected,
+    ConnectionStage.WaitingForAccessory,
+    ConnectionStage.WaitingForPermission,
+    ConnectionStage.Error,
+    -> false
 }
 
 @Preview(showBackground = true, backgroundColor = 0xFF07131F, widthDp = 420, heightDp = 900)

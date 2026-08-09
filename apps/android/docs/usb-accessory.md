@@ -66,14 +66,23 @@ host upgrade does not make an existing app undiscoverable.
 6. Moving the app to the background closes the active stream; returning to the
    foreground rescans and reopens it. A user disconnect remains paused until
    retry is requested.
+7. A physical detach closes the descriptors and publishes a distinct
+   `Detached` state instead of pretending the app is merely waiting. A later
+   attach in the same process opens a new descriptor and starts a fresh LDFL
+   generation: both peers may begin their independent sender sequences at
+   `Hello/0` again. No reconnect marker or private USB header is added.
+8. The transport is owned by the application/process lifecycle, not an
+   Activity. Activity recreation does not intentionally close the descriptor;
+   process backgrounding still does.
 
 ## Evidence boundary
 
 JVM tests cover split/coalesced reads, global control/media wire order,
 duplicate/stale sequence rejection, priority-before-sequence assignment,
-blocking-read close, queue overflow/keyframe recovery, identity matching, and
-reconnect timing. Android lint and APK assembly cover framework API
-integration.
+blocking-read close, queue overflow/keyframe recovery, identity matching,
+detach state propagation, reconnect timing, and a fresh handshake/sequence
+generation after in-process recovery. Android lint and instrumentation cover
+framework and Activity lifecycle integration.
 
 **未实机验证 / Not verified on a physical Android device.**
 

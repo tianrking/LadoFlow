@@ -6,6 +6,7 @@ import dev.ladoflow.display.input.AndroidInputEmission
 import dev.ladoflow.display.input.DisplayRotation
 import dev.ladoflow.display.input.InputDelivery
 import dev.ladoflow.display.input.RemoteViewport
+import dev.ladoflow.display.media.DecoderSurfaceController
 import dev.ladoflow.display.media.VideoDecoder
 import dev.ladoflow.display.media.VideoDecoderEvent
 import dev.ladoflow.display.media.VideoDecoderState
@@ -74,6 +75,8 @@ sealed interface AndroidDisplaySessionState {
         val configuration: DisplayConfigPayload,
     ) : AndroidDisplaySessionState
 
+    data class DeviceDisconnected(val accessoryName: String) : AndroidDisplaySessionState
+
     data class Displaying(
         val hostName: String,
         val configuration: DisplayConfigPayload,
@@ -87,9 +90,17 @@ sealed interface AndroidDisplaySessionState {
     data class Failed(
         val reason: String,
         val retryable: Boolean,
+        val kind: DisplaySessionFailureKind = DisplaySessionFailureKind.Local,
     ) : AndroidDisplaySessionState
 
     data class Unsupported(val reason: String) : AndroidDisplaySessionState
+}
+
+enum class DisplaySessionFailureKind {
+    Transport,
+    Protocol,
+    Decoder,
+    Local,
 }
 
 data class AndroidDisplaySessionMetrics(
@@ -139,6 +150,7 @@ class AndroidDisplaySession(
     val state: StateFlow<AndroidDisplaySessionState> = mutableState.asStateFlow()
     val metrics: StateFlow<AndroidDisplaySessionMetrics> = mutableMetrics.asStateFlow()
     val inputController = AndroidInputController(::submitInput, monotonicMicros)
+    val surfaceController = DecoderSurfaceController(decoder)
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -190,6 +202,12 @@ class AndroidDisplaySession(
 
             is UsbTransportState.Connected -> beginHandshake(transportState.accessory.displayName)
 
+            is UsbTransportState.Detached -> {
+                resetProtocol("USB accessory detached")
+                accessoryName = transportState.accessory.displayName
+                mutableState.value = AndroidDisplaySessionState.DeviceDisconnected(accessoryName)
+            }
+
             is UsbTransportState.Recovering -> {
                 resetProtocol("USB link recovering")
                 mutableState.value = AndroidDisplaySessionState.Recovering(
@@ -203,6 +221,7 @@ class AndroidDisplaySession(
                 mutableState.value = AndroidDisplaySessionState.Failed(
                     reason = transportState.reason,
                     retryable = transportState.retryable,
+                    kind = DisplaySessionFailureKind.Transport,
                 )
             }
 
@@ -225,7 +244,11 @@ class AndroidDisplaySession(
             onSendFailure = { reason ->
                 if (generation == protocolGeneration && !closed.get()) {
                     failed = true
-                    mutableState.value = AndroidDisplaySessionState.Failed(reason, retryable = true)
+                    mutableState.value = AndroidDisplaySessionState.Failed(
+                        reason,
+                        retryable = true,
+                        kind = DisplaySessionFailureKind.Transport,
+                    )
                 }
             },
         )
@@ -291,6 +314,7 @@ class AndroidDisplaySession(
                 mutableState.value = AndroidDisplaySessionState.Failed(
                     reason = payload.diagnostic.ifEmpty { "Host reported ${payload.code}" },
                     retryable = payload.retryable,
+                    kind = DisplaySessionFailureKind.Protocol,
                 )
             }
 
@@ -600,6 +624,7 @@ class AndroidDisplaySession(
                 mutableState.value = AndroidDisplaySessionState.Failed(
                     "Android decoder closed",
                     retryable = true,
+                    kind = DisplaySessionFailureKind.Decoder,
                 )
             }
 
@@ -666,7 +691,11 @@ class AndroidDisplaySession(
         updateQueueDepthMetric()
         inputController.updateViewport(null)
         decoder.reset(diagnostic)
-        mutableState.value = AndroidDisplaySessionState.Failed(diagnostic, retryable = true)
+        mutableState.value = AndroidDisplaySessionState.Failed(
+            diagnostic,
+            retryable = true,
+            kind = DisplaySessionFailureKind.Protocol,
+        )
         outbound?.sendControl(RemoteErrorPayload(code, retryable = true, diagnostic = diagnostic))
     }
 
@@ -679,7 +708,11 @@ class AndroidDisplaySession(
         updateQueueDepthMetric()
         inputController.updateViewport(null)
         decoder.reset(reason)
-        mutableState.value = AndroidDisplaySessionState.Failed(reason, retryable = false)
+        mutableState.value = AndroidDisplaySessionState.Failed(
+            reason,
+            retryable = false,
+            kind = DisplaySessionFailureKind.Local,
+        )
     }
 
     private fun resetProtocol(reason: String) {
@@ -771,6 +804,7 @@ class AndroidDisplaySession(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         resetProtocol("Display session closed")
+        surfaceController.release()
         sessionJob.cancel()
         mutableState.value = AndroidDisplaySessionState.Stopped
     }

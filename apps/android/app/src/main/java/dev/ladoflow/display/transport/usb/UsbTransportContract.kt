@@ -55,6 +55,9 @@ sealed interface UsbTransportState {
 
     data class Connected(val accessory: UsbAccessoryIdentity) : UsbTransportState
 
+    /** The active accessory physically left the Android USB accessory list. */
+    data class Detached(val accessory: UsbAccessoryIdentity) : UsbTransportState
+
     data class Recovering(
         val accessory: UsbAccessoryIdentity,
         val attempt: Int,
@@ -69,4 +72,19 @@ sealed interface UsbTransportState {
     ) : UsbTransportState
 
     data class Unsupported(val reason: String) : UsbTransportState
+}
+
+internal fun resolveUsbDetachState(
+    current: UsbAccessoryIdentity?,
+    detached: UsbAccessoryIdentity,
+    stillAttached: Boolean,
+    foreground: Boolean,
+    userPaused: Boolean,
+): UsbTransportState? {
+    if (current != detached || stillAttached) return null
+    return if (foreground && !userPaused) {
+        UsbTransportState.Detached(detached)
+    } else {
+        UsbTransportState.Stopped
+    }
 }

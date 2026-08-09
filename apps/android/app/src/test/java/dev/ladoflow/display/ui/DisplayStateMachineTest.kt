@@ -124,4 +124,32 @@ class DisplayStateMachineTest {
         assertEquals("Studio host accessory", linked.accessoryName)
         assertNull(linked.hostName)
     }
+
+    @Test
+    fun `physical detach is distinct from a stopped or failed transport`() {
+        val detached = DisplayStateMachine.reduce(
+            DisplayUiState(
+                stage = ConnectionStage.Displaying,
+                hostName = "Studio PC",
+                stream = StreamConfiguration(1_920, 1_080, 60, "H.264 Main"),
+            ),
+            DisplayEvent.DeviceDisconnected("Studio PC"),
+        )
+
+        assertEquals(ConnectionStage.DeviceDisconnected, detached.stage)
+        assertEquals("Studio PC", detached.accessoryName)
+        assertNull(detached.hostName)
+        assertNull(detached.stream)
+    }
+
+    @Test
+    fun `protocol failure is rendered separately from transport errors`() {
+        val protocolError = DisplayStateMachine.reduce(
+            DisplayUiState(stage = ConnectionStage.Pairing),
+            DisplayEvent.ProtocolFailed("Duplicate host sequence 1"),
+        )
+
+        assertEquals(ConnectionStage.ProtocolError, protocolError.stage)
+        assertEquals("Duplicate host sequence 1", protocolError.lastError)
+    }
 }
