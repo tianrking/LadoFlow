@@ -5,7 +5,7 @@
 use tauri::State;
 
 use crate::{
-    platform::request_capture_access,
+    platform::{CaptureProbeReport, probe_screen_capture, request_capture_access},
     runtime::{DesktopRuntime, HostSnapshot, LoopbackConfig},
 };
 
@@ -31,4 +31,14 @@ pub fn stop_loopback(runtime: State<'_, DesktopRuntime>) -> Result<HostSnapshot,
 pub fn request_screen_capture_access(runtime: State<'_, DesktopRuntime>) -> HostSnapshot {
     let _status = request_capture_access();
     runtime.snapshot()
+}
+
+#[tauri::command]
+pub async fn run_screen_capture_probe(
+    display_id: Option<String>,
+    fps: u16,
+) -> Result<CaptureProbeReport, String> {
+    tauri::async_runtime::spawn_blocking(move || probe_screen_capture(display_id.as_deref(), fps))
+        .await
+        .map_err(|error| format!("native capture probe worker failed: {error}"))?
 }

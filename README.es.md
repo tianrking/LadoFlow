@@ -32,7 +32,7 @@ La experiencia final deberá ser sencilla: instalar el host, abrir LadoFlow en l
 | Protocolo compartido | Mensajes M1 y encuadre acotado implementados | Mensajes versionados de control, vídeo, entrada y telemetría |
 | Runtime compartido | Negociación, sesiones, reconexión, telemetría, ritmo y loopback implementados | Runtime común para hosts y pantallas |
 | Host de escritorio | Aplicación Tauri 2 con loopback y diagnósticos ejecutable | Una interfaz con servicios nativos por plataforma |
-| Host macOS | Permisos de captura, descubrimiento de pantallas y paquete local sin firmar implementados | ScreenCaptureKit/VideoToolbox, pantalla virtual nativa y aplicación notarizada |
+| Host macOS | Permisos/pantallas, prueba IOSurface real con ScreenCaptureKit y paquete local implementados | Flujo continuo con VideoToolbox, pantalla virtual nativa y aplicación notarizada |
 | Host Windows | Límite Tauri y CI multiplataforma | Captura/Media Foundation y controlador de pantalla indirecta firmado |
 | Host Linux | Solo arquitectura | Integración compatible con Wayland, X11 y DRM |
 | Pantalla Android | Solo arquitectura | Receptor Kotlin nativo con decodificación por hardware |

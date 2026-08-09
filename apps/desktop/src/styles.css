@@ -24,6 +24,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -488,6 +492,10 @@ h2 {
   background: rgba(33, 213, 219, 0.08);
 }
 
+.button--secondary + .button--secondary {
+  margin-top: 9px;
+}
+
 .button--quiet {
   border: 1px solid var(--line-strong);
   color: #a5bac0;
@@ -678,6 +686,27 @@ h2 {
   padding: 12px;
   border: 1px dashed var(--line-strong);
   border-radius: 10px;
+}
+
+.capture-probe-result {
+  margin: 12px 0 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: #8da4ab;
+  background: rgba(7, 20, 25, 0.58);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.capture-probe-result--good {
+  border-color: rgba(33, 213, 219, 0.25);
+  color: #9fd8d9;
+}
+
+.capture-probe-result--warn {
+  border-color: rgba(255, 199, 102, 0.24);
+  color: #d9bf8c;
 }
 
 .pipeline {

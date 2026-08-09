@@ -23,22 +23,25 @@ The current Mac development slice is runnable and locally verified:
 
 - `apps/desktop/src-tauri/src/platform/macos.rs` checks screen-recording access
   and enumerates active displays through CoreGraphics;
+- an explicit 750 ms ScreenCaptureKit probe receives real frame callbacks,
+  verifies IOSurface-backed pixel buffers, and reports format/dimensions/dirty
+  rectangles without copying pixels into the webview;
 - the Tauri UI can request capture access, select a 30/60 Hz synthetic mode,
   start/stop the loopback, and display live telemetry;
 - the loopback passes typed protocol frames through the bounded media channel;
-- `tauri build --bundles app` creates an unsigned `LadoFlow.app` with macOS 12.3
+- `tauri build --bundles app` creates an ad-hoc `LadoFlow.app` with macOS 13.0
   as its configured minimum system version.
 
-This is not yet a screen-capture or extended-display implementation. It does
-not create a virtual monitor, acquire ScreenCaptureKit frames, invoke a hardware
-encoder, connect over USB, or feed a mobile decoder.
+This is not yet a complete screen-streaming or extended-display implementation.
+It does not create a virtual monitor, maintain a production capture stream,
+invoke a hardware encoder, connect over USB, or feed a mobile decoder.
 
 ### macOS next slice
 
-1. Add a target-gated ScreenCaptureKit adapter that owns stream setup, output
-   callbacks, resizing, source removal, and shutdown.
-2. Convert each callback into codec-neutral metadata plus an opaque native
-   surface. Keep native surface handles out of the wire protocol.
+1. Promote the bounded ScreenCaptureKit probe into a long-running adapter that
+   owns stream setup, callbacks, resizing, source removal, and shutdown.
+2. Convert each production callback into codec-neutral metadata plus an opaque
+   native surface. Keep native surface handles out of the wire protocol.
 3. Add a VideoToolbox encoder boundary that accepts the native surface and emits
    H.264 access units with explicit keyframe information.
 4. Convert encoded output into `ladoflow_protocol::VideoFrame`, preserving the

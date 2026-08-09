@@ -9,8 +9,8 @@
 - the official [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
   for the host OS.
 
-On macOS, the current unsigned local build works with the Xcode command-line
-tools. Install them when needed with:
+On macOS 13 or newer, the current ad-hoc local build works with the Xcode
+command-line tools. Install them when needed with:
 
 ```bash
 xcode-select --install
@@ -53,14 +53,16 @@ cargo test --workspace
 pnpm check:desktop
 ```
 
-Build an unsigned local macOS application bundle with:
+Build an ad-hoc local macOS application bundle with:
 
 ```bash
 pnpm --filter @ladoflow/desktop tauri build --bundles app
 ```
 
-The bundle is written below `target/release/bundle/macos/`. It is not signed or
-notarized and does not yet capture or create an extended display.
+The bundle is written below `target/release/bundle/macos/`. It has only an
+ad-hoc local signature, is not notarized, and does not yet create an extended
+display. Its explicit native probe does capture frames only after the user grants
+screen-recording access; the probe discards pixel contents in the native callback.
 
 ## Cross-platform CI
 

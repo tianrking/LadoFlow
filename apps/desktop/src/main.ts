@@ -56,6 +56,26 @@ interface LoopbackConfig {
   fps: number;
 }
 
+interface CaptureProbeReport {
+  backend: string;
+  displayId: string;
+  displayName: string;
+  width: number;
+  height: number;
+  targetFps: number;
+  elapsedMs: number;
+  callbacks: number;
+  contentFrames: number;
+  idleFrames: number;
+  incompleteFrames: number;
+  framesWithSurface: number;
+  dirtyRects: number;
+  observedFps: number;
+  startupLatencyMs: number | null;
+  pixelFormat: string | null;
+  passed: boolean;
+}
+
 const elements = {
   appVersion: getElement("app-version"),
   hostPlatform: getElement("host-platform"),
@@ -69,6 +89,8 @@ const elements = {
   stop: getButton("stop-session"),
   refresh: getButton("refresh-status"),
   requestPermission: getButton("request-permission"),
+  runCaptureProbe: getButton("run-capture-probe"),
+  captureProbeResult: getElement("capture-probe-result"),
   resolution: getSelect("resolution"),
   framesPresented: getElement("frames-presented"),
   actualFps: getElement("actual-fps"),
@@ -82,6 +104,7 @@ const elements = {
 };
 
 let selectedFps = 60;
+let selectedDisplayId: string | null = null;
 let pollingHandle: number | undefined;
 let busy = false;
 
@@ -229,6 +252,13 @@ function render(snapshot: HostSnapshot) {
   );
   elements.captureBackend.textContent = `${snapshot.platform.captureBackend}. ${snapshot.platform.virtualDisplayStatus}`;
   elements.requestPermission.hidden = permissionGranted || permissionUnsupported;
+  elements.requestPermission.disabled = busy;
+  elements.runCaptureProbe.hidden = snapshot.os !== "macos" || !permissionGranted;
+  elements.runCaptureProbe.disabled = busy;
+  selectedDisplayId =
+    snapshot.platform.displays.find((display) => display.primary)?.id ??
+    snapshot.platform.displays[0]?.id ??
+    null;
   renderDisplays(snapshot.platform.displays);
 
   if (isRunning && pollingHandle === undefined) {
@@ -270,14 +300,55 @@ async function runAction(action: () => Promise<HostSnapshot>) {
   busy = true;
   elements.start.disabled = true;
   elements.stop.disabled = true;
+  elements.requestPermission.disabled = true;
+  elements.runCaptureProbe.disabled = true;
   clearError();
   try {
-    render(await action());
+    const snapshot = await action();
+    busy = false;
+    render(snapshot);
   } catch (error) {
+    busy = false;
     showError(error);
     await refreshSnapshot(false);
+  }
+}
+
+function renderCaptureProbe(report: CaptureProbeReport) {
+  elements.captureProbeResult.hidden = false;
+  elements.captureProbeResult.className = report.passed
+    ? "capture-probe-result capture-probe-result--good"
+    : "capture-probe-result capture-probe-result--warn";
+  const startup =
+    report.startupLatencyMs === null ? "unknown" : `${formatMetric(report.startupLatencyMs)} ms`;
+  const format = report.pixelFormat ?? "unknown format";
+  elements.captureProbeResult.textContent = report.passed
+    ? `${report.backend} delivered ${report.framesWithSurface} native ${format} surfaces (${report.width} × ${report.height}) across ${report.callbacks} callbacks. First surface: ${startup}; callback rate: ${formatMetric(report.observedFps)} fps.`
+    : `${report.backend} started, but the ${report.elapsedMs} ms probe did not receive a native surface. Check permission, display availability, and system capture status.`;
+}
+
+async function runCaptureProbe() {
+  if (busy) return;
+  busy = true;
+  const idleLabel = elements.runCaptureProbe.textContent;
+  elements.runCaptureProbe.disabled = true;
+  elements.runCaptureProbe.textContent = "Capturing for 0.75 s…";
+  elements.start.disabled = true;
+  elements.stop.disabled = true;
+  clearError();
+
+  try {
+    const report = await invoke<CaptureProbeReport>("run_screen_capture_probe", {
+      displayId: selectedDisplayId,
+      fps: selectedFps,
+    });
+    renderCaptureProbe(report);
+  } catch (error) {
+    showError(error);
   } finally {
     busy = false;
+    elements.runCaptureProbe.textContent = idleLabel;
+    await refreshSnapshot(false);
   }
 }
 
@@ -294,6 +365,8 @@ elements.refresh.addEventListener("click", () => void refreshSnapshot());
 elements.requestPermission.addEventListener("click", () => {
   void runAction(() => invoke<HostSnapshot>("request_screen_capture_access"));
 });
+
+elements.runCaptureProbe.addEventListener("click", () => void runCaptureProbe());
 
 document.querySelectorAll<HTMLButtonElement>("[data-fps]").forEach((button) => {
   button.addEventListener("click", () => {

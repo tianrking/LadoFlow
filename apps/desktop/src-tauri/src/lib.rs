@@ -19,6 +19,7 @@ pub fn run() {
             commands::start_loopback,
             commands::stop_loopback,
             commands::request_screen_capture_access,
+            commands::run_screen_capture_probe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LadoFlow");

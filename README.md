@@ -47,7 +47,7 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 | Shared wire protocol | M1 payloads and bounded framing implemented | Versioned control, media, input, and telemetry messages |
 | Shared runtime | Negotiation, sessions, reconnect policy, telemetry, pacing, and bounded loopback implemented | Platform-neutral runtime used by every host and display |
 | Desktop host | Runnable Tauri 2 loopback and diagnostics UI | One shell with target-gated native services |
-| macOS host | Permission check, display discovery, and unsigned local app bundle implemented | ScreenCaptureKit/VideoToolbox pipeline, native virtual-display adapter, and notarized host |
+| macOS host | Permission/display discovery plus a real ScreenCaptureKit IOSurface probe and local app bundle | Long-running capture/VideoToolbox pipeline, native virtual-display adapter, and notarized host |
 | Windows host | Tauri boundary and cross-platform CI only | Windows Graphics Capture/Media Foundation service and signed indirect-display driver |
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
 | Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |

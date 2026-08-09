@@ -125,8 +125,8 @@
 
             <div class="setup-summary">
               <div>
-                <span>Codec</span>
-                <strong>H.264 baseline</strong>
+                <span>Media</span>
+                <strong>Codec-neutral synthetic</strong>
               </div>
               <div>
                 <span>Transport</span>
@@ -194,6 +194,10 @@
             <button id="request-permission" class="button button--secondary" type="button">
               Request screen recording access
             </button>
+            <button id="run-capture-probe" class="button button--secondary" type="button" hidden>
+              Run native capture probe
+            </button>
+            <p id="capture-probe-result" class="capture-probe-result" aria-live="polite" hidden></p>
           </article>
 
           <article class="panel architecture-card" aria-labelledby="architecture-title">

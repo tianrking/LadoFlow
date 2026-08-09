@@ -56,7 +56,7 @@ flowchart LR
     SYN --> PRO["ladoflow-protocol\ntyped VideoFrame · bounded framing"]
     PRO --> MEM["ladoflow-transport\nbounded loopback · supersession"]
     MEM --> RT
-    MAC["Target-gated macOS adapter\npermission · display discovery"] --> IPC
+    MAC["Target-gated macOS adapter\npermission · displays · native frame probe"] --> IPC
 ```
 
 This path exercises the shared contracts end to end without pretending to be a
@@ -126,10 +126,12 @@ Use the supported Indirect Display Driver model where practical. The signed driv
 
 Keep virtual-display integration isolated behind a native adapter because public API availability and distribution constraints can change by OS version. Signing and notarization are release gates, not afterthoughts.
 
-The current adapter uses CoreGraphics only for permission preflight/request and
-active-display metadata. Actual frame delivery belongs in a ScreenCaptureKit
-adapter, and hardware encoding belongs behind a VideoToolbox boundary. Neither
-API should be surfaced directly to the TypeScript UI.
+The current adapter uses CoreGraphics for permission preflight/request and
+active-display metadata. Its short ScreenCaptureKit probe verifies native
+IOSurface-backed callbacks while exposing only aggregate diagnostics to the UI.
+The production frame loop and hardware encoding still belong behind native
+ScreenCaptureKit and VideoToolbox boundaries; neither API or pixel buffer is
+surfaced directly to TypeScript.
 
 ### Linux
 

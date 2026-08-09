@@ -32,7 +32,7 @@ LadoFlow 的目标，是让 Windows、macOS 和 Linux 电脑把 Android 平板/�
 | 共享通信协议 | M1 消息与有界二进制帧已实现 | 版本化控制、视频、输入和遥测消息 |
 | 共享运行时 | 能力协商、会话、重连策略、遥测、帧调度和内存 loopback 已实现 | 被所有主机端与显示端复用的跨平台运行时 |
 | 桌面主机端 | Tauri 2 loopback 与诊断界面可运行 | 同一外壳按目标系统接入原生服务 |
-| macOS 主机端 | 录屏权限检查、显示器发现和未签名本地 `.app` 已实现 | ScreenCaptureKit/VideoToolbox、原生虚拟显示适配和公证 Host |
+| macOS 主机端 | 权限/显示器发现、真实 ScreenCaptureKit IOSurface 探测和本地 `.app` 已实现 | 长时 capture/VideoToolbox 管线、原生虚拟显示适配和公证 Host |
 | Windows 主机端 | 已有 Tauri 边界和跨平台 CI | Windows Graphics Capture/Media Foundation 服务及签名间接显示驱动 |
 | Linux 主机端 | 仅完成架构设计 | Wayland、X11、DRM 兼容路径 |
 | Android 显示端 | 仅完成架构设计 | Kotlin 原生接收、硬解和触控回传 |

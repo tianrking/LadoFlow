@@ -33,8 +33,30 @@ pub struct PlatformStatus {
     pub displays: Vec<DisplaySource>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureProbeReport {
+    pub backend: String,
+    pub display_id: String,
+    pub display_name: String,
+    pub width: u32,
+    pub height: u32,
+    pub target_fps: u16,
+    pub elapsed_ms: u64,
+    pub callbacks: u64,
+    pub content_frames: u64,
+    pub idle_frames: u64,
+    pub incomplete_frames: u64,
+    pub frames_with_surface: u64,
+    pub dirty_rects: u64,
+    pub observed_fps: f64,
+    pub startup_latency_ms: Option<f64>,
+    pub pixel_format: Option<String>,
+    pub passed: bool,
+}
+
 #[cfg(target_os = "macos")]
-pub use macos::{collect_status, request_capture_access};
+pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 
 #[cfg(not(target_os = "macos"))]
 #[must_use]
@@ -57,4 +79,15 @@ pub fn collect_status() -> PlatformStatus {
 #[must_use]
 pub fn request_capture_access() -> PlatformStatus {
     collect_status()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn probe_screen_capture(
+    _display_id: Option<&str>,
+    _fps: u16,
+) -> Result<CaptureProbeReport, String> {
+    Err(format!(
+        "native capture probe is not implemented for {}",
+        std::env::consts::OS
+    ))
 }

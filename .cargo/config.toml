@@ -1,0 +1,5 @@
+[env]
+# The native ScreenCaptureKit bridge is built as a macOS 13 Swift package.
+# Keep Cargo's Rust and Swift link targets aligned unless a caller explicitly
+# selects a newer deployment target.
+MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = false }

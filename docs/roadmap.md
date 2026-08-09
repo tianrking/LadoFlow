@@ -26,7 +26,8 @@ path; it is not automatically a release claim.
 ## M2 — macOS host proof of concept
 
 - [x] Target-gated screen-recording permission and active-display discovery adapter
-- [x] Unsigned local macOS application bundle
+- [x] Bounded ScreenCaptureKit callback/IOSurface diagnostics probe
+- [x] Ad-hoc local macOS application bundle
 - [ ] ScreenCaptureKit frame stream with resize and display-removal handling
 - [ ] IOSurface/Metal-friendly frame boundary with explicit pixel format
 - [ ] VideoToolbox H.264 hardware-encode integration
