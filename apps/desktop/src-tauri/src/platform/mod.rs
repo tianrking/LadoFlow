@@ -3,6 +3,9 @@ use serde::Serialize;
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(target_os = "windows")]
+mod windows;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplaySource {
@@ -58,7 +61,10 @@ pub struct CaptureProbeReport {
 #[cfg(target_os = "macos")]
 pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub use windows::{collect_status, probe_screen_capture, request_capture_access};
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[must_use]
 pub fn collect_status() -> PlatformStatus {
     let backend = match std::env::consts::OS {
@@ -75,13 +81,13 @@ pub fn collect_status() -> PlatformStatus {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[must_use]
 pub fn request_capture_access() -> PlatformStatus {
     collect_status()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn probe_screen_capture(
     _display_id: Option<&str>,
     _fps: u16,

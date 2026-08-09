@@ -11,7 +11,10 @@ repository = "https://github.com/tianrking/LadoFlow"
 authors = ["LadoFlow contributors"]
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Shared crates remain unsafe-free. Native platform adapters may opt in at the
+# smallest module boundary because Win32/driver FFI cannot be expressed without
+# audited unsafe calls.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = "warn"

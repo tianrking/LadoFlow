@@ -62,16 +62,16 @@ as the API baseline.
 
 ## Windows: implementation handoff
 
-The Windows desktop crate currently uses the generic adapter response. The CI
-matrix is configured to compile the frontend and desktop Rust boundary on a
-Windows runner, but native capture, encoding, service, and driver work must be
-performed on a physical Windows development machine with Visual Studio and the
-matching WDK.
+The Windows desktop crate now has a target-gated native adapter that checks
+`Windows.Graphics.Capture` support and enumerates active monitor geometry with
+`EnumDisplayMonitors`/`GetMonitorInfoW`. It reports real sources to the Tauri UI
+and validates source selection without claiming that frames have been captured.
+The D3D11 frame pool, encoding, service, and driver remain native milestones on
+a physical Windows development machine with Visual Studio and the matching WDK.
 
 ### Phase A — capture/encode proof of concept
 
-1. Add `apps/desktop/src-tauri/src/platform/windows.rs` under
-   `cfg(target_os = "windows")`; begin with OS/build information and display
+1. [x] Add a target-gated Windows adapter, capture support probe, and display
    source enumeration while preserving the existing `PlatformStatus` shape.
 2. Implement an explicit source-selection flow and a cancellable
    Windows.Graphics.Capture session backed by a small Direct3D 11 frame pool.
