@@ -35,10 +35,11 @@ controlled Windows test machine.
 Prerequisites:
 
 - Windows 11 x64;
-- Visual Studio 2022 with Desktop development with C++;
+- Visual Studio 2022 or 2026 with Desktop development with C++;
 - `nuget.exe` on `PATH`, or pass `-NuGetPath`;
-- network access to NuGet and, when the VS WDK integration component is absent,
-  Microsoft's pinned 46 KB build-integration VSIX.
+- network access to NuGet; a VS 2022 installation can use the pinned 46 KB
+  build-integration VSIX fallback, while VS 2026 must include its matching
+  Microsoft Windows Driver Kit component.
 
 From PowerShell:
 

@@ -21,20 +21,24 @@ $sdkArchPackageName = 'Microsoft.Windows.SDK.CPP.x64.10.0.26100.1'
 function Resolve-VisualStudio {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere)) {
-        throw 'Visual Studio Installer (vswhere.exe) was not found. Install Visual Studio 2022 with Desktop development with C++.'
+        throw 'Visual Studio Installer (vswhere.exe) was not found. Install Visual Studio with Desktop development with C++.'
     }
 
-    $installation = & $vswhere -latest -version '[17.0,18.0)' -products * `
+    $installation = & $vswhere -latest -version '[17.0,19.0)' -products * `
         -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
         -property installationPath
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installation)) {
-        throw 'Visual Studio 2022 with the x64 C++ toolset was not found.'
+        throw 'Visual Studio 2022 or 2026 with the x64 C++ toolset was not found.'
     }
 
     $installation = $installation.Trim()
     $msbuild = Join-Path $installation 'MSBuild\Current\Bin\MSBuild.exe'
-    $vcTargets = Join-Path $installation 'MSBuild\Microsoft\VC\v170'
-    if (-not (Test-Path -LiteralPath $msbuild) -or -not (Test-Path -LiteralPath $vcTargets)) {
+    $vcRoot = Join-Path $installation 'MSBuild\Microsoft\VC'
+    $vcTargets = Get-ChildItem -LiteralPath $vcRoot -Directory -Filter 'v*' -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'Microsoft.Cpp.Default.props') } |
+        Sort-Object { [int]($_.Name.Substring(1)) } -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not (Test-Path -LiteralPath $msbuild) -or [string]::IsNullOrWhiteSpace($vcTargets)) {
         throw "The Visual Studio C++ MSBuild files are incomplete at '$installation'."
     }
 
@@ -104,7 +108,11 @@ function Resolve-WdkVcTargets([string]$baseTargets) {
     # Microsoft ships the small Visual Studio WDK integration layer separately
     # from the NuGet WDK payload. Keep a user-local overlay so builds need no
     # administrative write to Program Files.
-    $overlay = Join-Path $toolsPath 'msbuild-v170-wdk'
+    $vcGeneration = Split-Path -Leaf $baseTargets
+    if ($vcGeneration -ne 'v170') {
+        throw "The Windows Driver Kit integration is missing from Visual Studio '$vcGeneration'. Install the Microsoft Windows Driver Kit component for that Visual Studio version."
+    }
+    $overlay = Join-Path $toolsPath "msbuild-$vcGeneration-wdk"
     $overlayToolset = Join-Path $overlay $toolsetRelative
     if (Test-Path -LiteralPath $overlayToolset) {
         return $overlay

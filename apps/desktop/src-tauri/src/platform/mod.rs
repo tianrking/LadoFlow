@@ -236,6 +236,9 @@ impl CapturedH264Stream {
         ))
     }
 
+    // Keep the same instance method contract as the Windows worker so runtime
+    // composition remains target-agnostic.
+    #[allow(clippy::unused_self)]
     pub fn try_next_batch(&self) -> Result<Option<H264StreamBatch>, String> {
         Err(format!(
             "native capture/H.264 streaming is not implemented for {}",
@@ -260,6 +263,8 @@ impl NativeInputController {
         ))
     }
 
+    // The non-Windows adapter deliberately preserves the native sink shape.
+    #[allow(clippy::unused_self)]
     pub fn inject(&mut self, _event: InputEvent) -> Result<(), String> {
         Err(format!(
             "native input injection is not implemented for {}",
@@ -275,6 +280,7 @@ pub struct UsbAccessoryManager;
 #[cfg(not(target_os = "windows"))]
 impl UsbAccessoryManager {
     #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn prepare(&self) -> UsbAccessoryProbeReport {
         UsbAccessoryProbeReport::failed(format!(
             "Android Open Accessory preparation is not implemented for {} yet",
@@ -282,11 +288,15 @@ impl UsbAccessoryManager {
         ))
     }
 
+    // Callers share one fallible disconnect path with the Windows owner even
+    // though this target has no resource to release yet.
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     pub fn disconnect(&self) -> Result<(), String> {
         Ok(())
     }
 
     #[must_use]
+    #[allow(clippy::unused_self)]
     pub const fn runtime_status(&self) -> Option<(UsbLinkState, String)> {
         None
     }
