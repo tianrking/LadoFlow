@@ -64,19 +64,26 @@ sealed interface DisplayEvent {
 
     data class PairingCompleted(val hostName: String) : DisplayEvent
 
+    data class UsbLinkConnected(val accessoryName: String) : DisplayEvent
+
     data class StreamStarted(val configuration: StreamConfiguration) : DisplayEvent
 
     data class MetricsUpdated(val metrics: StreamMetrics) : DisplayEvent
 
     data class LinkInterrupted(val reason: String) : DisplayEvent
 
-    data class RecoveryAttempted(val attempt: Int) : DisplayEvent
+    data class RecoveryAttempted(
+        val attempt: Int,
+        val reason: String,
+    ) : DisplayEvent
 
     data object RecoverySucceeded : DisplayEvent
 
     data class Failed(val reason: String) : DisplayEvent
 
     data object Disconnected : DisplayEvent
+
+    data object TransportStopped : DisplayEvent
 
     data class PreferencesChanged(val preferences: DisplayPreferences) : DisplayEvent
 }
@@ -123,6 +130,14 @@ object DisplayStateMachine {
             lastError = null,
         )
 
+        is DisplayEvent.UsbLinkConnected -> state.copy(
+            stage = ConnectionStage.Pairing,
+            accessoryName = event.accessoryName,
+            detail = "USB link open. Waiting for the host's LDFL Hello and capabilities.",
+            recoveryAttempt = 0,
+            lastError = null,
+        )
+
         is DisplayEvent.StreamStarted -> state.copy(
             stage = ConnectionStage.Displaying,
             stream = event.configuration,
@@ -144,6 +159,7 @@ object DisplayStateMachine {
             stage = ConnectionStage.Recovering,
             recoveryAttempt = event.attempt.coerceAtLeast(1),
             detail = "Reconnecting to the host (attempt ${event.attempt.coerceAtLeast(1)}).",
+            lastError = event.reason,
         )
 
         DisplayEvent.RecoverySucceeded -> state.copy(
@@ -162,6 +178,12 @@ object DisplayStateMachine {
         DisplayEvent.Disconnected -> DisplayUiState(
             stage = ConnectionStage.Disconnected,
             detail = "The host is disconnected. Your screen remains private on this device.",
+            preferences = state.preferences,
+        )
+
+        DisplayEvent.TransportStopped -> DisplayUiState(
+            stage = ConnectionStage.Disconnected,
+            detail = "USB transport is paused. Reopen or retry LadoFlow to connect again.",
             preferences = state.preferences,
         )
 

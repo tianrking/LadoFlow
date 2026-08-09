@@ -57,6 +57,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,6 +81,8 @@ import dev.ladoflow.display.ui.theme.LadoCyan
 import dev.ladoflow.display.ui.theme.LadoFlowTheme
 import dev.ladoflow.display.ui.theme.LadoMuted
 import dev.ladoflow.display.ui.theme.LadoSurfaceRaised
+import dev.ladoflow.display.transport.usb.AndroidUsbAccessoryTransport
+import dev.ladoflow.display.transport.usb.UsbTransportState
 
 private enum class Destination(
     val label: String,
@@ -91,9 +94,19 @@ private enum class Destination(
 }
 
 @Composable
-fun LadoFlowApp(displayViewModel: DisplayViewModel = viewModel()) {
+fun LadoFlowApp(
+    displayViewModel: DisplayViewModel = viewModel(),
+    usbTransport: AndroidUsbAccessoryTransport? = null,
+) {
     val state by displayViewModel.state.collectAsStateWithLifecycle()
     val view = LocalView.current
+
+    if (usbTransport != null) {
+        val transportState by usbTransport.state.collectAsStateWithLifecycle()
+        LaunchedEffect(transportState) {
+            displayViewModel.accept(transportState.toDisplayEvent())
+        }
+    }
 
     DisposableEffect(state.preferences.keepScreenAwake, view) {
         val previous = view.keepScreenOn
@@ -103,8 +116,26 @@ fun LadoFlowApp(displayViewModel: DisplayViewModel = viewModel()) {
 
     LadoFlowApp(
         state = state,
-        onEvent = displayViewModel::accept,
+        onEvent = { event ->
+            when (event) {
+                DisplayEvent.RetryRequested -> usbTransport?.retry()
+                DisplayEvent.Disconnected -> usbTransport?.disconnect()
+                else -> Unit
+            }
+            displayViewModel.accept(event)
+        },
     )
+}
+
+private fun UsbTransportState.toDisplayEvent(): DisplayEvent = when (this) {
+    UsbTransportState.Stopped -> DisplayEvent.TransportStopped
+    UsbTransportState.WaitingForAccessory -> DisplayEvent.RetryRequested
+    is UsbTransportState.AwaitingPermission -> DisplayEvent.AccessoryAttached(accessory.displayName)
+    is UsbTransportState.Opening -> DisplayEvent.PermissionGranted
+    is UsbTransportState.Connected -> DisplayEvent.UsbLinkConnected(accessory.displayName)
+    is UsbTransportState.Recovering -> DisplayEvent.RecoveryAttempted(attempt, reason)
+    is UsbTransportState.Error -> DisplayEvent.Failed(reason)
+    is UsbTransportState.Unsupported -> DisplayEvent.Failed(reason)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -667,7 +698,18 @@ private fun DiagnosticsScreen(state: DisplayUiState) {
     ) {
         SettingsCard(title = "Connection") {
             DiagnosticRow("State", stageLabel(state.stage))
-            DiagnosticRow("Transport", "USB Accessory · not active")
+            DiagnosticRow(
+                "Transport",
+                when (state.stage) {
+                    ConnectionStage.Pairing,
+                    ConnectionStage.Connected,
+                    ConnectionStage.Displaying,
+                    -> "USB Accessory · link open"
+
+                    ConnectionStage.Recovering -> "USB Accessory · recovering"
+                    else -> "USB Accessory · not connected"
+                },
+            )
             DiagnosticRow("Host", state.hostName ?: "Not connected")
             DiagnosticRow("Protocol", "LDFL v1 · frame and payload codec ready")
         }
@@ -679,9 +721,9 @@ private fun DiagnosticsScreen(state: DisplayUiState) {
         }
         SettingsCard(title = "Build boundary") {
             Text(
-                "This foundation includes the native Compose UI, deterministic connection state model, " +
-                    "and the bounded LDFL v1 Kotlin codec. USB I/O and hardware video decode are delivered " +
-                    "in the next verified slices.",
+                "This build includes the Compose UI, bounded LDFL v1 codec, and Android USB Accessory " +
+                    "lifecycle/I/O boundary. USB hardware behavior is not device-verified; MediaCodec " +
+                    "decode remains a separate implementation boundary.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )

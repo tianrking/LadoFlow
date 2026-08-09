@@ -9,6 +9,12 @@ The Kotlin protocol layer mirrors every LDFL v1 message family in
 video, input, telemetry, liveness, and error payloads, plus an incremental
 decoder for arbitrarily split or coalesced transport reads.
 
+The USB layer registers the Android Open Accessory attach filter, requests
+temporary user permission, opens a duplex `ParcelFileDescriptor`, runs bounded
+coroutine reader/writer loops, separates control/media backpressure, and uses a
+bounded reconnect policy. See [USB accessory handoff](./docs/usb-accessory.md)
+for the exact PC-host identity and transfer contract.
+
 ## Local build
 
 Requirements:
@@ -25,6 +31,9 @@ $env:ANDROID_SDK_ROOT = "<path-to-android-sdk>"
 ./gradlew.bat testDebugUnitTest assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/`. USB transport and
-hardware decode remain intentionally reported as inactive until their own
-verified slices land.
+The debug APK is written to `app/build/outputs/apk/debug/`. USB transport is
+wired to the application lifecycle but remains explicitly unverified on real
+hardware. Hardware decode remains inactive until its own verified slice lands.
+
+Automated build and stream-level tests do not prove phone/tablet USB behavior.
+**未实机验证 / Not verified on a physical Android device.**

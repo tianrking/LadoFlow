@@ -99,4 +99,16 @@ class DisplayStateMachineTest {
         assertEquals(ConnectionStage.WaitingForAccessory, retried.stage)
         assertNull(retried.lastError)
     }
+
+    @Test
+    fun `open USB link waits for protocol pairing instead of claiming a session`() {
+        val linked = DisplayStateMachine.reduce(
+            DisplayUiState(stage = ConnectionStage.WaitingForPermission),
+            DisplayEvent.UsbLinkConnected("Studio host accessory"),
+        )
+
+        assertEquals(ConnectionStage.Pairing, linked.stage)
+        assertEquals("Studio host accessory", linked.accessoryName)
+        assertNull(linked.hostName)
+    }
 }
