@@ -102,6 +102,10 @@ The implementation lives in these ownership boundaries:
 | Desktop composition | `apps/desktop/src-tauri` | Tauri commands, worker lifecycle, platform adapter selection |
 | Native integrations | `apps/desktop/src-tauri/src/platform` and `platform/` | OS APIs, services, and drivers |
 
+The shared link layer also contains a tested nonblocking TCP byte-stream worker
+for already authenticated sockets. Discovery and pairing intentionally stay in
+platform composition; see the [TCP transport boundary](./tcp-transport.md).
+
 ## Boundaries
 
 ### Platform-native

@@ -56,6 +56,8 @@ path; it is not automatically a release claim.
 - [ ] H.264 hardware decoder and renderer
 - [ ] Touch and pointer return path
 - [x] Host-side bounded/cancellable USB disconnect recovery with fresh protocol negotiation
+- [x] Shared bounded TCP LDFL worker for an already authenticated connected socket
+- [ ] Android listener, pairing preface, and Windows USB-tether route discovery/UI
 - [ ] Physical detach/reconnect endurance and cancellation test
 - [ ] macOS and Windows USB interoperability test
 
