@@ -47,7 +47,8 @@ path; it is not automatically a release claim.
 ## M4 — Android display and USB
 
 - [ ] Native Kotlin receiver shell
-- [ ] App-compatible USB discovery and pairing without ADB
+- [x] Shared AOA 1/2 negotiation contract and Windows explicit mode-switch/endpoint-claim probe
+- [ ] Physical Windows-to-Android USB interoperability without ADB
 - [ ] H.264 hardware decoder and renderer
 - [ ] Touch and pointer return path
 - [ ] Automatic disconnect/reconnect behavior

@@ -31,6 +31,7 @@ pub fn collect_status() -> PlatformStatus {
         capture_backend: "ScreenCaptureKit native frame probe with CoreGraphics discovery"
             .to_owned(),
         encoder_status: "VideoToolbox encoder capability probe is not implemented yet".to_owned(),
+        usb_status: "Android Open Accessory host is not implemented on macOS yet".to_owned(),
         capture_permission: permission,
         virtual_display_status:
             "Virtual-display creation remains isolated behind the native macOS adapter.".to_owned(),

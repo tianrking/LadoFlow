@@ -52,7 +52,7 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
 | Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
 | iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
-| USB transport | Architecture only | Direct, authenticated device link |
+| USB transport | Tested AOA 1/2 negotiation contract plus explicit Windows libusb discovery/mode-switch/interface-claim probe; no physical-device proof yet | Direct, authenticated device link |
 | Wi-Fi/LAN transport | Planned after USB | Explicitly paired local connection |
 
 No row above is a release claim. Follow the [roadmap](./docs/roadmap.md) and [GitHub milestones](https://github.com/tianrking/LadoFlow/milestones) for evidence-backed progress.

@@ -20,6 +20,7 @@ pub fn run() {
             commands::stop_loopback,
             commands::request_screen_capture_access,
             commands::run_screen_capture_probe,
+            commands::prepare_android_usb,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LadoFlow");

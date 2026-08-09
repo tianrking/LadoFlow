@@ -699,6 +699,16 @@ h2 {
   line-height: 1.55;
 }
 
+.usb-readiness {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.usb-readiness .eyebrow {
+  margin-bottom: 0.45rem;
+}
+
 .capture-probe-result--good {
   border-color: rgba(33, 213, 219, 0.25);
   color: #9fd8d9;

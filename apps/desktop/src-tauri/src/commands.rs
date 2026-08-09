@@ -5,7 +5,10 @@
 use tauri::State;
 
 use crate::{
-    platform::{CaptureProbeReport, probe_screen_capture, request_capture_access},
+    platform::{
+        CaptureProbeReport, UsbAccessoryProbeReport, prepare_android_accessory,
+        probe_screen_capture, request_capture_access,
+    },
     runtime::{DesktopRuntime, HostSnapshot, LoopbackConfig},
 };
 
@@ -41,4 +44,11 @@ pub async fn run_screen_capture_probe(
     tauri::async_runtime::spawn_blocking(move || probe_screen_capture(display_id.as_deref(), fps))
         .await
         .map_err(|error| format!("native capture probe worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn prepare_android_usb() -> Result<UsbAccessoryProbeReport, String> {
+    tauri::async_runtime::spawn_blocking(prepare_android_accessory)
+        .await
+        .map_err(|error| format!("Android USB preparation worker failed: {error}"))
 }

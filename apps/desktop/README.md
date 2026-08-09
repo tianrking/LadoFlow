@@ -37,6 +37,16 @@ requires non-empty Annex B H.264 output before reporting encode verification.
 The probe has produced a real Intel Quick Sync bitstream on physical hardware;
 it is not yet the long-running capture-to-encoder path or a virtual display.
 
+The Windows host also includes an explicit Android Open Accessory preparation
+path. Shared Rust code validates the exact AOA protocol query, six terminated
+identity strings, mode-switch request, and short-transfer failures. The Windows
+adapter then waits for Google accessory re-enumeration and proves that the app
+interface and both bulk endpoints can be claimed. Read-only status never sends
+vendor requests; only the user's **Prepare Android USB** action attempts a mode
+switch. This has not yet been verified with a physical Android device, and
+Windows may need a signed WinUSB-compatible binding before libusb can access the
+interface.
+
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).
 

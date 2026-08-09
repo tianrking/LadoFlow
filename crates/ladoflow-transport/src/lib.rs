@@ -11,10 +11,19 @@
 
 #![forbid(unsafe_code)]
 
+mod aoa;
 mod loopback;
 mod packet;
 mod transport;
 
+pub use aoa::{
+    AOA_ACCESSORY_ADB_PRODUCT_ID, AOA_ACCESSORY_AUDIO_ADB_PRODUCT_ID,
+    AOA_ACCESSORY_AUDIO_PRODUCT_ID, AOA_ACCESSORY_PRODUCT_ID, AOA_CONTROL_READ_TYPE,
+    AOA_CONTROL_TIMEOUT, AOA_CONTROL_WRITE_TYPE, AOA_GET_PROTOCOL, AOA_GOOGLE_VENDOR_ID,
+    AOA_MAX_IDENTIFICATION_BYTES, AOA_SEND_IDENTIFICATION, AOA_START_ACCESSORY, AccessoryControlIo,
+    AccessoryIdentity, AccessoryIdentityError, AoaNegotiationError, AoaProtocolVersion,
+    is_aoa_app_accessory, negotiate_accessory_mode,
+};
 pub use loopback::{DisconnectReport, LoopbackConfig, LoopbackEndpoint, loopback_pair};
 pub use packet::{Channel, Packet, SupersessionKey};
 pub use transport::{

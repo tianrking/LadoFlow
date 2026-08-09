@@ -45,6 +45,7 @@ interface HostSnapshot {
   platform: {
     captureBackend: string;
     encoderStatus: string;
+    usbStatus: string;
     capturePermission: CapturePermission;
     virtualDisplayStatus: string;
     displays: DisplaySource[];
@@ -77,6 +78,21 @@ interface CaptureProbeReport {
   passed: boolean;
 }
 
+interface UsbAccessoryProbeReport {
+  passed: boolean;
+  state: string;
+  detail: string;
+  protocolVersion: number | null;
+  busNumber: number | null;
+  deviceAddress: number | null;
+  vendorId: number | null;
+  productId: number | null;
+  interfaceNumber: number | null;
+  inputEndpoint: number | null;
+  outputEndpoint: number | null;
+  maxPacketSize: number | null;
+}
+
 const elements = {
   appVersion: getElement("app-version"),
   hostPlatform: getElement("host-platform"),
@@ -92,6 +108,9 @@ const elements = {
   requestPermission: getButton("request-permission"),
   runCaptureProbe: getButton("run-capture-probe"),
   captureProbeResult: getElement("capture-probe-result"),
+  prepareAndroidUsb: getButton("prepare-android-usb"),
+  usbStatus: getElement("usb-status"),
+  usbProbeResult: getElement("usb-probe-result"),
   resolution: getSelect("resolution"),
   framesPresented: getElement("frames-presented"),
   actualFps: getElement("actual-fps"),
@@ -252,11 +271,14 @@ function render(snapshot: HostSnapshot) {
     permissionGranted ? "good" : permissionUnsupported ? "idle" : "warn",
   );
   elements.captureBackend.textContent = `${snapshot.platform.captureBackend}. ${snapshot.platform.encoderStatus}. ${snapshot.platform.virtualDisplayStatus}`;
+  elements.usbStatus.textContent = snapshot.platform.usbStatus;
   elements.requestPermission.hidden = permissionGranted || permissionUnsupported;
   elements.requestPermission.disabled = busy;
   const hasNativeCaptureProbe = snapshot.os === "macos" || snapshot.os === "windows";
   elements.runCaptureProbe.hidden = !hasNativeCaptureProbe || !permissionGranted;
   elements.runCaptureProbe.disabled = busy;
+  elements.prepareAndroidUsb.hidden = snapshot.os !== "windows";
+  elements.prepareAndroidUsb.disabled = busy;
   selectedDisplayId =
     snapshot.platform.displays.find((display) => display.primary)?.id ??
     snapshot.platform.displays[0]?.id ??
@@ -304,6 +326,7 @@ async function runAction(action: () => Promise<HostSnapshot>) {
   elements.stop.disabled = true;
   elements.requestPermission.disabled = true;
   elements.runCaptureProbe.disabled = true;
+  elements.prepareAndroidUsb.disabled = true;
   clearError();
   try {
     const snapshot = await action();
@@ -334,6 +357,7 @@ async function runCaptureProbe() {
   busy = true;
   const idleLabel = elements.runCaptureProbe.textContent;
   elements.runCaptureProbe.disabled = true;
+  elements.prepareAndroidUsb.disabled = true;
   elements.runCaptureProbe.textContent = "Capturing for 0.75 s…";
   elements.start.disabled = true;
   elements.stop.disabled = true;
@@ -354,6 +378,58 @@ async function runCaptureProbe() {
   }
 }
 
+function renderUsbProbe(report: UsbAccessoryProbeReport) {
+  elements.usbProbeResult.hidden = false;
+  elements.usbProbeResult.className = report.passed
+    ? "capture-probe-result capture-probe-result--good"
+    : "capture-probe-result capture-probe-result--warn";
+  if (!report.passed) {
+    elements.usbProbeResult.textContent = report.detail;
+    return;
+  }
+  const protocol = report.protocolVersion === null ? "already in accessory mode" : `AOA ${report.protocolVersion}`;
+  const device =
+    report.vendorId === null || report.productId === null
+      ? "Android accessory"
+      : `${hexWord(report.vendorId)}:${hexWord(report.productId)}`;
+  const endpoints =
+    report.inputEndpoint === null || report.outputEndpoint === null
+      ? "bulk endpoints"
+      : `bulk IN ${hexByte(report.inputEndpoint)} / OUT ${hexByte(report.outputEndpoint)}`;
+  elements.usbProbeResult.textContent = `${protocol} ready: ${device}, interface ${report.interfaceNumber ?? "?"}, ${endpoints}, max packet ${report.maxPacketSize ?? "?"} bytes. ${report.detail}`;
+}
+
+function hexByte(value: number): string {
+  return `0x${value.toString(16).padStart(2, "0")}`;
+}
+
+function hexWord(value: number): string {
+  return value.toString(16).padStart(4, "0");
+}
+
+async function prepareAndroidUsb() {
+  if (busy) return;
+  busy = true;
+  const idleLabel = elements.prepareAndroidUsb.textContent;
+  elements.prepareAndroidUsb.disabled = true;
+  elements.prepareAndroidUsb.textContent = "Preparing Android USB…";
+  elements.start.disabled = true;
+  elements.stop.disabled = true;
+  elements.runCaptureProbe.disabled = true;
+  clearError();
+
+  try {
+    const report = await invoke<UsbAccessoryProbeReport>("prepare_android_usb");
+    renderUsbProbe(report);
+  } catch (error) {
+    showError(error);
+  } finally {
+    busy = false;
+    elements.prepareAndroidUsb.textContent = idleLabel;
+    await refreshSnapshot(false);
+  }
+}
+
 elements.start.addEventListener("click", () => {
   void runAction(() => invoke<HostSnapshot>("start_loopback", { config: selectedConfig() }));
 });
@@ -369,6 +445,7 @@ elements.requestPermission.addEventListener("click", () => {
 });
 
 elements.runCaptureProbe.addEventListener("click", () => void runCaptureProbe());
+elements.prepareAndroidUsb.addEventListener("click", () => void prepareAndroidUsb());
 
 document.querySelectorAll<HTMLButtonElement>("[data-fps]").forEach((button) => {
   button.addEventListener("click", () => {

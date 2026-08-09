@@ -50,6 +50,7 @@ use ::windows::{
 use super::{CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus};
 
 mod media_foundation;
+mod usb_accessory;
 
 use self::media_foundation::{HardwareEncodeProbe, HardwareEncoder, MediaFoundationRuntime};
 
@@ -267,6 +268,7 @@ pub fn collect_status() -> PlatformStatus {
     PlatformStatus {
         capture_backend: backend,
         encoder_status: query_encoder_status(),
+        usb_status: usb_accessory::collect_status(),
         capture_permission: if capture_supported {
             CapturePermission::Granted
         } else {
@@ -296,6 +298,11 @@ pub fn probe_screen_capture(
 ) -> Result<CaptureProbeReport, String> {
     validate_probe_fps(fps)?;
     capture_worker()?.probe(display_id, fps)
+}
+
+#[must_use]
+pub fn prepare_android_accessory() -> super::UsbAccessoryProbeReport {
+    usb_accessory::prepare_android_accessory()
 }
 
 fn probe_screen_capture_on_worker(

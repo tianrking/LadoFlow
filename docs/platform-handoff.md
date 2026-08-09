@@ -100,6 +100,36 @@ exposes display/window frame acquisition. Microsoft's
 is the source of truth for support checks, picker behavior, frame pools, resize,
 and device-loss handling.
 
+### Phase C — Android Open Accessory USB
+
+The shared transport crate now owns the side-effect-free AOA 1/2 control
+contract: request `51`, all six request-`52` identity strings, request `53`,
+little-endian protocol parsing, the 256-byte terminated-string bound, and
+short-transfer rejection. The Windows adapter uses statically linked libusb and
+only sends those vendor requests after explicit user action. It then waits for
+`18d1:2d00/2d01/2d04/2d05`, finds a bulk IN/OUT pair, and must successfully
+claim the app interface before reporting readiness.
+
+1. [x] Match the Android app identity exactly: manufacturer `LadoFlow`, model
+   `LadoFlow Host`; do not make app routing depend on host version.
+2. [x] Unit-test the complete AOA control sequence, malformed protocol reply,
+   unsupported version zero, identity bounds, and short writes.
+3. [x] Add explicit Windows mode switching, re-enumeration timeout, descriptor
+   inspection, and bulk-interface claim diagnostics.
+4. [ ] Keep the claimed handle open in a cancellable duplex session, carrying
+   unchanged LDFL bytes with writes capped at 64 KiB.
+5. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
+   physical Android device.
+6. [ ] Replace development driver setup with a signed, installer-managed
+   WinUSB-compatible binding and verify rollback/uninstall.
+
+The AOA request and product-ID values follow the
+[AOSP AOA 1.0 specification](https://source.android.com/docs/core/interaction/accessories/aoa)
+and [AOA 2.0 additions](https://source.android.com/docs/core/interaction/accessories/aoa2).
+On Windows, libusb documents that a non-HID interface generally needs WinUSB,
+libusbK, or another compatible driver before user-mode access; the UI reports
+this as an installation requirement rather than a protocol failure.
+
 ### Phase B — real extended display
 
 Use the supported IddCx user-mode indirect-display model for the virtual monitor.

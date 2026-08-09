@@ -198,6 +198,17 @@
               Run native capture probe
             </button>
             <p id="capture-probe-result" class="capture-probe-result" aria-live="polite" hidden></p>
+
+            <div class="usb-readiness">
+              <p class="eyebrow">ANDROID USB</p>
+              <p id="usb-status" class="platform-copy">
+                Detecting Android Open Accessory host support.
+              </p>
+              <button id="prepare-android-usb" class="button button--secondary" type="button" hidden>
+                Prepare Android USB
+              </button>
+              <p id="usb-probe-result" class="capture-probe-result" aria-live="polite" hidden></p>
+            </div>
           </article>
 
           <article class="panel architecture-card" aria-labelledby="architecture-title">
