@@ -1,16 +1,17 @@
 # Android MediaCodec boundary
 
-The first Android decoder slice accepts the existing LDFL v1 `DisplayConfig`
-and `VideoFrame` payloads without adding fields to the wire protocol. H.264 is
-the only enabled codec. HEVC and AV1 remain explicit future implementations
-behind the codec-neutral `VideoDecoder` interface.
+The Android decoder accepts the existing LDFL v1 `DisplayConfig` and
+`VideoFrame` payloads without adding fields to the wire protocol. H.264 Main is
+the only enabled codec/profile pair. HEVC and AV1 remain explicit future
+implementations behind the codec-neutral `VideoDecoder` interface.
 
 ## H.264 access-unit contract
 
-The Windows hardware probe in commit `a8b7950` established that its Intel Quick
-Sync MFT output is Annex-B H.264. The Android decoder therefore requires each
-LDFL `VideoFrame` access unit to preserve Annex-B start codes. It does not wrap
-the payload in another USB or Android-specific envelope.
+The Windows hardware probes in commits `a8b7950` and `cbdadbe` established that
+Intel Quick Sync emits timestamped Annex-B H.264 Main access units and preserves
+clean-point/IDR boundaries. Android therefore requires each LDFL `VideoFrame`
+access unit to preserve Annex-B start codes. It does not wrap the payload in
+another USB or Android-specific envelope.
 
 For every new `DisplayConfig`, reconnect, output-Surface replacement, or dropped
 dependent chain, the host must send:
@@ -32,13 +33,14 @@ but it does not silently reinterpret the wire flag.
 
 ## Decoder and Surface lifecycle
 
-- all MediaCodec calls and callbacks run on one dedicated `HandlerThread`;
-- Android enumerates compatible AVC decoders and prefers one reported as
-  hardware-accelerated on API 29 or later;
-- on older Android releases, hardware acceleration is reported as unknown
-  rather than inferred from a codec name;
+- Android probes actual AVC Main profile, size, frame-rate, and bitrate ranges;
+- the exact negotiated tuple is checked again before MediaCodec configuration;
+- compatible decoders prefer one reported hardware-accelerated on API 29+;
+- older releases report acceleration as unknown instead of inferring from a
+  codec name;
 - API 30+ low-latency mode is enabled only when the selected codec advertises
   the platform low-latency feature;
+- all MediaCodec calls and callbacks run on one dedicated `HandlerThread`;
 - pending input is bounded to three access units; overflow drops a dependent
   chain and waits for the next LDFL keyframe;
 - output is released immediately to a caller-owned `SurfaceView` Surface;
@@ -47,12 +49,14 @@ but it does not silently reinterpret the wire flag.
 
 `OutputReleasedToSurface` means MediaCodec handed a decoded buffer to the
 Surface. It deliberately does not claim that the device panel presented the
-frame; physical presentation and latency require device-side measurements.
+frame; physical presentation and latency require device-side measurements. The
+event retains the exact Host `VideoFrame.metadata.frame_id` through the Annex-B
+gate and MediaCodec timestamp correlation so session telemetry can report it.
 
 ## Evidence boundary
 
-The Annex-B parser and recovery gate are covered by local JVM tests. The Android
-project compiles and packages the MediaCodec and Surface code against API 36.
-No phone or tablet has decoded this stream yet.
+The Annex-B parser, recovery gate, session Surface gate, and capability contract
+are covered by local JVM tests or compilation against API 36. No phone or tablet
+has decoded this stream yet.
 
 **未实机验证 / Not verified on a physical Android device.**

@@ -48,14 +48,12 @@ class UsbIoSessionTest {
         val connection = TestConnection(input, ByteArrayOutputStream())
         val dispatcher = UnconfinedTestDispatcher(testScheduler)
         val session = UsbIoSession(connection, backgroundScope, dispatcher, readBufferBytes = 8)
-        val controls = async(dispatcher) { session.controlFrames.toList() }
-        val mediaFrames = async(dispatcher) { session.mediaFrames.toList() }
+        val frames = async(dispatcher) { session.frames.toList() }
 
         session.start()
         advanceUntilIdle()
 
-        assertEquals(listOf(control), controls.await())
-        assertEquals(listOf(media), mediaFrames.await())
+        assertEquals(listOf(control, media), frames.await())
         assertTrue(session.state.value is UsbIoSessionState.Failed)
         assertEquals(
             UsbIoFailureKind.EndOfStream,
@@ -80,7 +78,7 @@ class UsbIoSessionTest {
     }
 
     @Test
-    fun `writer prioritizes queued control ahead of queued input`() = runBlocking {
+    fun `writer preserves already assigned sequence order across frame families`() = runBlocking {
         val input = BlockingInputStream()
         val output = FirstWriteGatedOutputStream()
         val session = UsbIoSession(TestConnection(input, output), this)
@@ -97,7 +95,7 @@ class UsbIoSessionTest {
         assertTrue(output.threeWrites.await(5, TimeUnit.SECONDS))
 
         val decoded = IncrementalFrameDecoder().push(output.bytes())
-        assertEquals(listOf(firstInput, control, secondInput), decoded)
+        assertEquals(listOf(firstInput, secondInput, control), decoded)
         session.close()
     }
 
@@ -115,6 +113,47 @@ class UsbIoSessionTest {
 
         assertTrue(input.closed.await(5, TimeUnit.SECONDS))
         assertEquals(UsbIoSessionState.Closed, session.state.value)
+    }
+
+    @Test
+    fun `reader fails closed on duplicate or stale sender sequence`() = runTest {
+        val first = LdflFrame.fromPayload(FrameFlags.None, 7u, PingPayload(1u, 2u))
+        val duplicate = LdflFrame.fromPayload(FrameFlags.None, 7u, PingPayload(3u, 4u))
+        val connection = TestConnection(
+            ChunkedInputStream(listOf(first.encode() + duplicate.encode())),
+            ByteArrayOutputStream(),
+        )
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val session = UsbIoSession(connection, backgroundScope, dispatcher)
+
+        session.start()
+        advanceUntilIdle()
+
+        assertTrue(session.state.value is UsbIoSessionState.Failed)
+        assertEquals(
+            UsbIoFailureKind.Protocol,
+            (session.state.value as UsbIoSessionState.Failed).kind,
+        )
+    }
+
+    @Test
+    fun `reader fails closed when stream ends with a partial frame`() = runTest {
+        val frame = LdflFrame.fromPayload(FrameFlags.None, 0u, PingPayload(1u, 2u)).encode()
+        val connection = TestConnection(
+            ChunkedInputStream(listOf(frame.copyOf(frame.size - 1))),
+            ByteArrayOutputStream(),
+        )
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val session = UsbIoSession(connection, backgroundScope, dispatcher)
+
+        session.start()
+        advanceUntilIdle()
+
+        assertTrue(session.state.value is UsbIoSessionState.Failed)
+        assertEquals(
+            UsbIoFailureKind.Protocol,
+            (session.state.value as UsbIoSessionState.Failed).kind,
+        )
     }
 
     @Test(expected = IllegalArgumentException::class)

@@ -64,6 +64,21 @@ class H264FrameGateTest {
     }
 
     @Test
+    fun decoderIdentityComesFromHostVideoMetadataFrameId() {
+        val gate = H264FrameGate()
+        val ready = gate.offer(
+            videoFrame(
+                frameId = 0x1234u,
+                bytes = parameterNalUnits + idrNalUnit,
+                flags = FrameFlags.Keyframe,
+                sequence = 99u,
+            ),
+        ) as H264GateDecision.Ready
+
+        assertEquals(0x1234uL, ready.input.frameId)
+    }
+
+    @Test
     fun resetKeepsCsdButRequiresAnotherKeyframeWhenRequested() {
         val gate = H264FrameGate()
         gate.offer(videoFrame(30u, parameterNalUnits + idrNalUnit, FrameFlags.Keyframe))
@@ -137,9 +152,10 @@ class H264FrameGateTest {
         frameId: ULong,
         bytes: ByteArray,
         flags: FrameFlags,
+        sequence: ULong = frameId,
     ): LdflFrame = LdflFrame.fromPayload(
         flags = flags,
-        sequence = frameId,
+        sequence = sequence,
         payload = VideoFramePayload(
             metadata = VideoFrameMetadata(
                 frameId = frameId,

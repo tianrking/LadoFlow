@@ -70,9 +70,14 @@ sealed interface VideoDecoderEvent {
 interface VideoDecoder : Closeable {
     val state: StateFlow<VideoDecoderState>
     val events: SharedFlow<VideoDecoderEvent>
+    /** Access units pending input plus codec inputs awaiting output release. */
+    val queueDepth: StateFlow<Int>
 
     /** The caller owns [surface] and must send null before it becomes invalid. */
     fun setOutputSurface(surface: Surface?)
+
+    /** Returns a diagnostic when this concrete decoder cannot honor the exact config. */
+    fun configurationRejectionReason(configuration: DisplayConfigPayload): String? = null
 
     fun applyConfiguration(configuration: DisplayConfigPayload)
 

@@ -36,7 +36,7 @@ import kotlinx.coroutines.withContext
 class AndroidUsbAccessoryTransport(
     context: Context,
     private val reconnectPolicy: UsbReconnectPolicy = UsbReconnectPolicy(),
-) : DefaultLifecycleObserver, Closeable {
+) : DefaultLifecycleObserver, Closeable, LdflDisplayTransport {
     private val applicationContext = context.applicationContext
     private val usbManager = applicationContext.getSystemService(UsbManager::class.java)
     private val usbAccessorySupported = applicationContext.packageManager.hasSystemFeature(
@@ -57,17 +57,12 @@ class AndroidUsbAccessoryTransport(
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
 
-    val state: StateFlow<UsbTransportState> = mutableState.asStateFlow()
+    override val state: StateFlow<UsbTransportState> = mutableState.asStateFlow()
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    val controlFrames: Flow<LdflFrame> = mutableSession
+    override val frames: Flow<LdflFrame> = mutableSession
         .filterNotNull()
-        .flatMapLatest { it.controlFrames }
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val mediaFrames: Flow<LdflFrame> = mutableSession
-        .filterNotNull()
-        .flatMapLatest { it.mediaFrames }
+        .flatMapLatest { it.frames }
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -153,7 +148,7 @@ class AndroidUsbAccessoryTransport(
         handleAttachedAccessory(accessory)
     }
 
-    fun retry() {
+    override fun retry() {
         userPaused = false
         reconnectAttempt = 0
         if (!usbAccessorySupported) {
@@ -165,18 +160,21 @@ class AndroidUsbAccessoryTransport(
         if (foreground) scanAttachedAccessories()
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         userPaused = true
         cancelConnectionWork()
         closeActiveSession()
         mutableState.value = UsbTransportState.Stopped
     }
 
-    suspend fun sendControl(frame: LdflFrame): Boolean {
+    override suspend fun sendControl(frame: LdflFrame): Boolean {
         val session = mutableSession.value ?: return false
         session.sendControl(frame)
         return true
     }
+
+    override fun trySendControl(frame: LdflFrame): Boolean =
+        mutableSession.value?.trySendControl(frame) == true
 
     private fun scanAttachedAccessories() {
         if (closed.get() || userPaused || !foreground || !usbAccessorySupported) return

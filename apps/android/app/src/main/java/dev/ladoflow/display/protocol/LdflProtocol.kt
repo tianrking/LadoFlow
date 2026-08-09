@@ -16,8 +16,25 @@ enum class ProtocolViolation {
     PayloadTooLarge,
     BufferLimitExceeded,
     UnexpectedMessageType,
+    NonMonotonicSequence,
     InvalidPayload,
     InvalidUtf8,
+}
+
+/** One validator per physical/session stream; sequence zero is valid. */
+class MonotonicSequenceValidator {
+    private var highest: ULong? = null
+
+    fun observe(sequence: ULong) {
+        val previous = highest
+        requireProtocol(
+            previous == null || sequence > previous,
+            ProtocolViolation.NonMonotonicSequence,
+        ) {
+            "LDFL sequence $sequence is duplicate or stale after $previous"
+        }
+        highest = sequence
+    }
 }
 
 class LdflProtocolException(
@@ -49,6 +66,7 @@ enum class MessageType(
     }
 }
 
+@ConsistentCopyVisibility
 data class FrameFlags private constructor(val bits: Int) {
     init {
         if (bits and KNOWN_MASK.inv() != 0) {

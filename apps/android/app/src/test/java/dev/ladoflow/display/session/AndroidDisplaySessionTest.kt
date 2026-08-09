@@ -1,0 +1,406 @@
+package dev.ladoflow.display.session
+
+import android.view.Surface
+import dev.ladoflow.display.input.InputDelivery
+import dev.ladoflow.display.media.VideoDecoder
+import dev.ladoflow.display.media.DecoderDropReason
+import dev.ladoflow.display.media.VideoDecoderEvent
+import dev.ladoflow.display.media.VideoDecoderState
+import dev.ladoflow.display.protocol.ButtonState
+import dev.ladoflow.display.protocol.CapabilitiesPayload
+import dev.ladoflow.display.protocol.CodecCapabilities
+import dev.ladoflow.display.protocol.CodecProfile
+import dev.ladoflow.display.protocol.DisplayConfigPayload
+import dev.ladoflow.display.protocol.EndpointRole
+import dev.ladoflow.display.protocol.FeatureFlags
+import dev.ladoflow.display.protocol.FrameFlags
+import dev.ladoflow.display.protocol.HelloPayload
+import dev.ladoflow.display.protocol.InputCapabilities
+import dev.ladoflow.display.protocol.InputPayload
+import dev.ladoflow.display.protocol.LdflFrame
+import dev.ladoflow.display.protocol.MessageType
+import dev.ladoflow.display.protocol.PingPayload
+import dev.ladoflow.display.protocol.PointerButton
+import dev.ladoflow.display.protocol.PointerButtonInput
+import dev.ladoflow.display.protocol.PongPayload
+import dev.ladoflow.display.protocol.RemoteErrorCode
+import dev.ladoflow.display.protocol.RemoteErrorPayload
+import dev.ladoflow.display.protocol.TelemetryPayload
+import dev.ladoflow.display.protocol.VideoCodec
+import dev.ladoflow.display.protocol.VideoFrameMetadata
+import dev.ladoflow.display.protocol.VideoFramePayload
+import dev.ladoflow.display.transport.usb.LdflDisplayTransport
+import dev.ladoflow.display.transport.usb.UsbAccessoryIdentity
+import dev.ladoflow.display.transport.usb.UsbTransportState
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class AndroidDisplaySessionTest {
+    @Test
+    fun repliesWithExactDisplayHelloAndCapabilitiesStartingAtSequenceZero() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connect()
+
+        val helloFrame = harness.transport.nextSent()
+        val capabilitiesFrame = harness.transport.nextSent()
+        val hello = helloFrame.decodePayload() as HelloPayload
+
+        assertEquals(0uL, helloFrame.sequence)
+        assertEquals(MessageType.Hello, helloFrame.messageType)
+        assertEquals(EndpointRole.Display, hello.role)
+        assertEquals(1, hello.minProtocol)
+        assertEquals(1, hello.maxProtocol)
+        assertEquals("LadoFlow Android", hello.implementationName)
+        assertTrue(hello.nonce.contentEquals(ByteArray(16) { 0x44 }))
+        assertEquals(1uL, capabilitiesFrame.sequence)
+        assertEquals(harness.localCapabilities, capabilitiesFrame.decodePayload())
+    }
+
+    @Test
+    fun validHandshakeConfigAndSurfaceGateMediaBeforeDisplaying() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+        assertEquals(listOf(displayConfig()), harness.decoder.configurations)
+
+        val media = videoFrame(sequence = 3u, keyframe = true)
+        harness.transport.framesMutable.emit(media)
+        assertTrue(harness.decoder.submitted.isEmpty())
+
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+        eventually { harness.decoder.submitted.size == 1 }
+        assertEquals(media, harness.decoder.submitted.single())
+        assertTrue(harness.session.state.value is AndroidDisplaySessionState.Connected)
+
+        harness.decoder.eventsMutable.emit(
+            VideoDecoderEvent.OutputReleasedToSurface(7u, 30_000),
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Displaying }
+        assertEquals(1, harness.session.metrics.value.outputsReleasedToSurface)
+    }
+
+    @Test
+    fun mediaBeforeConfigFailsClosedWithConfigurationError() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+
+        harness.transport.framesMutable.emit(videoFrame(sequence = 2u, keyframe = true))
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Failed }
+        val error = harness.transport.nextSent().decodePayload() as RemoteErrorPayload
+
+        assertEquals(RemoteErrorCode.ConfigurationRejected, error.code)
+        assertTrue(harness.decoder.submitted.isEmpty())
+    }
+
+    @Test
+    fun duplicateHelloAndDuplicateCapabilitiesEachFailClosed() = runTest {
+        val duplicateHello = Harness(backgroundScope)
+        duplicateHello.connectAndNegotiate()
+        duplicateHello.transport.framesMutable.emit(hostHelloFrame(sequence = 2u))
+        eventually { duplicateHello.session.state.value is AndroidDisplaySessionState.Failed }
+        assertEquals(
+            RemoteErrorCode.ProtocolViolation,
+            (duplicateHello.transport.nextSent().decodePayload() as RemoteErrorPayload).code,
+        )
+
+        val duplicateCapabilities = Harness(backgroundScope)
+        duplicateCapabilities.connectAndNegotiate()
+        duplicateCapabilities.transport.framesMutable.emit(hostCapabilitiesFrame(sequence = 2u))
+        eventually { duplicateCapabilities.session.state.value is AndroidDisplaySessionState.Failed }
+        assertEquals(
+            RemoteErrorCode.ProtocolViolation,
+            (duplicateCapabilities.transport.nextSent().decodePayload() as RemoteErrorPayload).code,
+        )
+    }
+
+    @Test
+    fun pongInputAndTelemetryShareOneMonotonicControlSequence() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
+
+        harness.transport.framesMutable.emit(
+            LdflFrame.fromPayload(FrameFlags.None, 3u, PingPayload(0x99u, 100u)),
+        )
+        val pongFrame = harness.transport.nextSent()
+        val pong = pongFrame.decodePayload() as PongPayload
+        assertEquals(0x99uL, pong.token)
+
+        harness.session.submitInputPayload(
+            InputPayload(
+                20_000u,
+                PointerButtonInput(PointerButton.Primary, ButtonState.Pressed),
+            ),
+            InputDelivery.Critical,
+        )
+        val inputFrame = harness.transport.nextSent()
+        assertTrue(harness.session.sendTelemetryNow())
+        val telemetryFrame = harness.transport.nextSent()
+
+        assertEquals(listOf(2uL, 3uL, 4uL), listOf(pongFrame, inputFrame, telemetryFrame).map { it.sequence })
+        assertEquals(MessageType.Pong, pongFrame.messageType)
+        assertEquals(MessageType.Input, inputFrame.messageType)
+        assertTrue(telemetryFrame.decodePayload() is TelemetryPayload)
+    }
+
+    @Test
+    fun rejectsDisplayConfigAboveAdvertisedLimits() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        val oversized = displayConfig().copy(width = 1_921)
+
+        harness.transport.framesMutable.emit(
+            LdflFrame.fromPayload(FrameFlags.None, 2u, oversized),
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Failed }
+
+        val error = harness.transport.nextSent().decodePayload() as RemoteErrorPayload
+        assertEquals(RemoteErrorCode.ConfigurationRejected, error.code)
+        assertTrue(harness.decoder.configurations.isEmpty())
+    }
+
+    @Test
+    fun duplicateSequenceAcrossMediaAndControlFailsClosed() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+
+        harness.transport.framesMutable.emit(videoFrame(sequence = 3u, keyframe = true))
+        harness.transport.framesMutable.emit(
+            LdflFrame.fromPayload(FrameFlags.None, 3u, PingPayload(1u, 2u)),
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Failed }
+
+        val error = harness.transport.nextSent().decodePayload() as RemoteErrorPayload
+        assertEquals(RemoteErrorCode.ProtocolViolation, error.code)
+        assertTrue(error.diagnostic.contains("duplicate or stale", ignoreCase = true))
+    }
+
+    @Test
+    fun rejectsInitialDisplayConfigThatIsNotHostSequenceTwo() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+
+        harness.transport.framesMutable.emit(
+            LdflFrame.fromPayload(FrameFlags.None, 4u, displayConfig()),
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Failed }
+
+        val error = harness.transport.nextSent().decodePayload() as RemoteErrorPayload
+        assertEquals(RemoteErrorCode.ConfigurationRejected, error.code)
+        assertTrue(harness.decoder.configurations.isEmpty())
+    }
+
+    @Test
+    fun rejectsH264ProfileOtherThanMain() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        val highProfile = displayConfig().copy(profile = CodecProfile.H264High)
+
+        harness.transport.framesMutable.emit(
+            LdflFrame.fromPayload(FrameFlags.None, 2u, highProfile),
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Failed }
+
+        val error = harness.transport.nextSent().decodePayload() as RemoteErrorPayload
+        assertEquals(RemoteErrorCode.ConfigurationRejected, error.code)
+        assertTrue(harness.decoder.configurations.isEmpty())
+    }
+
+    @Test
+    fun telemetryReportsLastSurfaceReleasedHostFrameAndSessionQueueCounters() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
+
+        harness.decoder.mutableQueueDepth.value = 2
+        harness.decoder.eventsMutable.emit(
+            VideoDecoderEvent.FrameDropped(40u, DecoderDropReason.QueueOverflow, "test drop"),
+        )
+        harness.decoder.eventsMutable.emit(
+            VideoDecoderEvent.OutputReleasedToSurface(0x1234u, 30_000),
+        )
+        eventually {
+            harness.session.metrics.value.outputsReleasedToSurface == 1L &&
+                harness.session.metrics.value.droppedVideoFrames == 1L
+        }
+
+        assertTrue(harness.session.sendTelemetryNow())
+        val telemetry = harness.transport.nextSent().decodePayload() as TelemetryPayload
+        assertEquals(0x1234uL, telemetry.frameId)
+        assertEquals(1u, telemetry.droppedFrames)
+        assertEquals(2, telemetry.queueDepth)
+    }
+
+    private class Harness(scope: kotlinx.coroutines.CoroutineScope) {
+        val transport = FakeTransport()
+        val decoder = FakeDecoder()
+        val localCapabilities = capabilities(1_920, 1_080)
+        val session = AndroidDisplaySession(
+            transport = transport,
+            decoder = decoder,
+            localCapabilities = localCapabilities,
+            parentScope = scope,
+            nonceSource = { ByteArray(16) { 0x44 } },
+            monotonicMicros = generateSequence(1_000uL) { it + 100u }.iterator()::next,
+            periodicReportsEnabled = false,
+        ).also { it.start() }
+
+        suspend fun connect() {
+            transport.mutableState.value = UsbTransportState.Connected(accessoryIdentity())
+        }
+
+        suspend fun connectAndNegotiate() {
+            connect()
+            transport.nextSent()
+            transport.nextSent()
+            transport.framesMutable.emit(hostHelloFrame())
+            transport.framesMutable.emit(hostCapabilitiesFrame())
+            eventually { session.state.value is AndroidDisplaySessionState.Ready }
+        }
+    }
+
+    private class FakeTransport : LdflDisplayTransport {
+        val mutableState = MutableStateFlow<UsbTransportState>(UsbTransportState.Stopped)
+        val framesMutable = MutableSharedFlow<LdflFrame>(extraBufferCapacity = 16)
+        private val sentChannel = Channel<LdflFrame>(Channel.UNLIMITED)
+        val sent = CopyOnWriteArrayList<LdflFrame>()
+        override val state: StateFlow<UsbTransportState> = mutableState.asStateFlow()
+        override val frames: Flow<LdflFrame> = framesMutable
+
+        override suspend fun sendControl(frame: LdflFrame): Boolean {
+            sent += frame
+            sentChannel.send(frame)
+            return true
+        }
+
+        override fun trySendControl(frame: LdflFrame): Boolean {
+            sent += frame
+            return sentChannel.trySend(frame).isSuccess
+        }
+
+        override fun retry() = Unit
+
+        override fun disconnect() {
+            mutableState.value = UsbTransportState.Stopped
+        }
+
+        suspend fun nextSent(): LdflFrame = withTimeout(5_000) { sentChannel.receive() }
+    }
+
+    private class FakeDecoder : VideoDecoder {
+        val mutableState = MutableStateFlow<VideoDecoderState>(VideoDecoderState.Idle)
+        val mutableQueueDepth = MutableStateFlow(0)
+        val eventsMutable = MutableSharedFlow<VideoDecoderEvent>(extraBufferCapacity = 16)
+        val configurations = mutableListOf<DisplayConfigPayload>()
+        val submitted = mutableListOf<LdflFrame>()
+        override val state: StateFlow<VideoDecoderState> = mutableState.asStateFlow()
+        override val events: SharedFlow<VideoDecoderEvent> = eventsMutable.asSharedFlow()
+        override val queueDepth: StateFlow<Int> = mutableQueueDepth.asStateFlow()
+
+        override fun setOutputSurface(surface: Surface?) = Unit
+
+        override fun applyConfiguration(configuration: DisplayConfigPayload) {
+            configurations += configuration
+            mutableState.value = VideoDecoderState.AwaitingSurface(configuration)
+        }
+
+        override fun submit(frame: LdflFrame): Boolean = submitted.add(frame)
+
+        override fun reset(reason: String) {
+            mutableState.value = VideoDecoderState.Idle
+        }
+
+        override fun close() {
+            mutableState.value = VideoDecoderState.Closed
+        }
+    }
+
+    companion object {
+        private fun capabilities(
+            width: Int,
+            height: Int,
+        ) = CapabilitiesPayload(
+            maxWidth = width,
+            maxHeight = height,
+            maxRefreshMillihz = 60_000u,
+            maxBitrateKbps = 20_000u,
+            codecs = CodecCapabilities.H264,
+            input = InputCapabilities.Pointer or InputCapabilities.Touch,
+            features = FeatureFlags.DynamicRotation,
+        )
+
+        private fun hostHelloFrame(sequence: ULong = 0u) = LdflFrame.fromPayload(
+            FrameFlags.None,
+            sequence,
+            HelloPayload(1, 1, EndpointRole.Host, ByteArray(16) { 0x11 }, "Windows Host"),
+        )
+
+        private fun hostCapabilitiesFrame(sequence: ULong = 1u) = LdflFrame.fromPayload(
+            FrameFlags.None,
+            sequence,
+            capabilities(3_840, 2_160),
+        )
+
+        private fun displayConfig() = DisplayConfigPayload(
+            width = 1_920,
+            height = 1_080,
+            refreshMillihz = 60_000u,
+            bitrateKbps = 12_000u,
+            codec = VideoCodec.H264,
+            profile = CodecProfile.H264Main,
+        )
+
+        private fun configFrame() = LdflFrame.fromPayload(FrameFlags.None, 2u, displayConfig())
+
+        private fun videoFrame(
+            sequence: ULong,
+            keyframe: Boolean,
+        ) = LdflFrame.fromPayload(
+            if (keyframe) FrameFlags.Keyframe else FrameFlags.None,
+            sequence,
+            VideoFramePayload(
+                VideoFrameMetadata(sequence, 10u, 20u, 16_667u),
+                byteArrayOf(0, 0, 1, 0x65, 1, 2),
+            ),
+        )
+
+        private fun accessoryIdentity() = UsbAccessoryIdentity(
+            manufacturer = "LadoFlow",
+            model = "LadoFlow Host",
+            description = "Test PC",
+            version = "test",
+            serial = null,
+        )
+
+        private suspend fun eventually(predicate: () -> Boolean) {
+            withTimeout(5_000) {
+                while (!predicate()) kotlinx.coroutines.yield()
+            }
+        }
+    }
+}

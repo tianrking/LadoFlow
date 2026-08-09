@@ -42,6 +42,7 @@ enum class TouchPhase(val wireValue: Int) {
     }
 }
 
+@ConsistentCopyVisibility
 data class KeyModifiers private constructor(val bits: Int) {
     fun contains(other: KeyModifiers): Boolean = bits and other.bits == other.bits
 

@@ -33,12 +33,18 @@ host upgrade does not make an existing app undiscoverable.
   partially consumed accessory transfer can be discarded. This is a stream
   chunk contract, not the USB endpoint's negotiated max-packet size.
 - Android sends control/input/telemetry frames only. Video is host-to-Android.
-- Reverse protocol-control and input lanes are independent bounded FIFOs.
-  Protocol control has priority (32 frames) over input (64 frames), so Hello,
-  capability, liveness, error, and telemetry traffic does not wait behind a
-  burst of touch or pointer events. Media overflow discards the broken delta
-  chain and waits for the next frame marked `KEYFRAME`; it never feeds a known-
-  incomplete chain to the decoder.
+- The receive path validates one strictly increasing sender sequence across
+  control and media before dispatch. Its ordered queue is bounded to eight
+  decoded frames and applies backpressure rather than changing wire order. EOF
+  with a partial/trailing LDFL frame is a protocol failure.
+- Android selects outbound protocol control (32), critical input (64), and
+  coalescible input (32) from separate bounded payload queues. It assigns the
+  next global sequence only after that priority decision, then hands the frame
+  to one 64-frame FIFO USB writer. Priority can therefore never reorder frames
+  that already have sequence numbers.
+- Pre-Surface and MediaCodec access-unit queues are each bounded to three.
+  Overflow drops the dependent delta chain and waits for a new LDFL frame
+  marked `KEYFRAME`; it never feeds a known-incomplete chain to MediaCodec.
 
 ## Lifecycle implemented on Android
 
@@ -63,9 +69,11 @@ host upgrade does not make an existing app undiscoverable.
 
 ## Evidence boundary
 
-JVM tests cover split/coalesced reads, writer bytes and priority, blocking-read
-close, queue overflow/keyframe recovery, identity matching, and reconnect
-timing. Android lint and APK assembly cover framework API integration.
+JVM tests cover split/coalesced reads, global control/media wire order,
+duplicate/stale sequence rejection, priority-before-sequence assignment,
+blocking-read close, queue overflow/keyframe recovery, identity matching, and
+reconnect timing. Android lint and APK assembly cover framework API
+integration.
 
 **未实机验证 / Not verified on a physical Android device.**
 

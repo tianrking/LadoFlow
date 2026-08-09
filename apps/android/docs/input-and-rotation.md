@@ -1,6 +1,6 @@
 # Android input and rotation boundary
 
-The decoder `SurfaceView` can attach an `AndroidInputController`. It translates
+The decoder `SurfaceView` attaches an `AndroidInputController`. It translates
 Android events into the existing LDFL v1 `InputPayload` layouts; no Android-only
 wire events or fields are added.
 
@@ -23,10 +23,16 @@ normal key-repeat behavior after receiving one press and one release. Android
 key codes without a USB HID keyboard-page mapping are ignored; text composition
 and IME strings require a later protocol version.
 
-The eventual session coordinator must enqueue critical events with the
-suspending bounded send path. Coalescible move/wheel events may use the
-non-blocking path and be dropped under backpressure. This prevents a saturated
-motion stream from losing a key release or touch end.
+The current negotiated input mask is `POINTER | TOUCH`. Keyboard mapping stays
+behind the capability gate and is not sent until host injection and physical
+Android keyboard behavior are validated. Focus follows the active pointer or
+touch session.
+
+The session controller queues protocol control (32), critical input (64), and
+coalescible input (32) before assigning the next sender sequence. Critical
+events use a suspending bounded path. Coalescible move/wheel events use the
+non-blocking path and may be dropped under backpressure. After selection, all
+numbered frames enter the same 64-frame FIFO USB writer.
 
 ## Coordinates, resolution, and rotation
 

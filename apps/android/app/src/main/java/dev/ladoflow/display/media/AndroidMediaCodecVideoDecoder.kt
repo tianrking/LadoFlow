@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
 import dev.ladoflow.display.protocol.DisplayConfigPayload
+import dev.ladoflow.display.protocol.CodecProfile
 import dev.ladoflow.display.protocol.LdflFrame
 import dev.ladoflow.display.protocol.MessageType
 import dev.ladoflow.display.protocol.VideoCodec
@@ -40,6 +41,7 @@ class AndroidMediaCodecVideoDecoder(
     private val availableInputBuffers = ArrayDeque<Int>()
     private val queuedFramesByTimestamp = mutableMapOf<Long, ArrayDeque<QueuedFrame>>()
     private val mutableState = MutableStateFlow<VideoDecoderState>(VideoDecoderState.Idle)
+    private val mutableQueueDepth = MutableStateFlow(0)
     private val mutableEvents = MutableSharedFlow<VideoDecoderEvent>(
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -52,6 +54,7 @@ class AndroidMediaCodecVideoDecoder(
 
     override val state: StateFlow<VideoDecoderState> = mutableState.asStateFlow()
     override val events: SharedFlow<VideoDecoderEvent> = mutableEvents.asSharedFlow()
+    override val queueDepth: StateFlow<Int> = mutableQueueDepth.asStateFlow()
 
     init {
         require(maxPendingAccessUnits > 0) { "Pending access-unit capacity must be positive" }
@@ -96,6 +99,9 @@ class AndroidMediaCodecVideoDecoder(
             }
         }
     }
+
+    override fun configurationRejectionReason(configuration: DisplayConfigPayload): String? =
+        runCatching { selectAvcDecoder(configuration) }.exceptionOrNull()?.message
 
     override fun submit(frame: LdflFrame): Boolean {
         if (closed.get() || frame.messageType != MessageType.VideoFrame) return false
@@ -160,6 +166,7 @@ class AndroidMediaCodecVideoDecoder(
                     return
                 }
                 pendingInputs.addLast(decision.input)
+                updateQueueDepth()
                 ensureCodec(currentConfiguration, decision.parameterSets)
                 pumpInput()
             }
@@ -175,6 +182,7 @@ class AndroidMediaCodecVideoDecoder(
         releaseCodec()
         if (decision.input.isKeyframe) {
             pendingInputs.addLast(decision.input)
+            updateQueueDepth()
             mutableEvents.tryEmit(
                 VideoDecoderEvent.Warning(
                     "Decoder queue superseded $droppedCount access units with keyframe ${decision.input.frameId}",
@@ -308,6 +316,7 @@ class AndroidMediaCodecVideoDecoder(
                 return
             }
         }
+        updateQueueDepth()
     }
 
     private fun rememberQueuedFrame(input: H264DecoderInput) {
@@ -320,6 +329,7 @@ class AndroidMediaCodecVideoDecoder(
         val frames = queuedFramesByTimestamp[presentationTimestampMicros] ?: return null
         val frame = frames.pollFirst()
         if (frames.isEmpty()) queuedFramesByTimestamp.remove(presentationTimestampMicros)
+        updateQueueDepth()
         return frame
     }
 
@@ -346,12 +356,19 @@ class AndroidMediaCodecVideoDecoder(
         val codec = activeCodec
         activeCodec = null
         activeBackend = null
+        pendingInputs.clear()
         availableInputBuffers.clear()
         queuedFramesByTimestamp.clear()
         if (codec != null) {
             runCatching { codec.stop() }
             runCatching { codec.release() }
         }
+        updateQueueDepth()
+    }
+
+    private fun updateQueueDepth() {
+        mutableQueueDepth.value = pendingInputs.size +
+            queuedFramesByTimestamp.values.sumOf { it.size }
     }
 
     override fun close() {
@@ -380,6 +397,12 @@ private data class DecoderSelection(
 )
 
 private fun selectAvcDecoder(configuration: DisplayConfigPayload): DecoderSelection {
+    require(configuration.codec == VideoCodec.H264) {
+        "Android v1 MediaCodec boundary supports H.264 only"
+    }
+    require(configuration.profile == CodecProfile.H264Main) {
+        "Android v1 MediaCodec boundary supports H.264 Main only"
+    }
     val candidates = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
         .asSequence()
         .filterNot { it.isEncoder }
@@ -388,10 +411,7 @@ private fun selectAvcDecoder(configuration: DisplayConfigPayload): DecoderSelect
             val capabilities = runCatching {
                 info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
             }.getOrNull() ?: return@mapNotNull null
-            val sizeSupported = runCatching {
-                capabilities.videoCapabilities?.isSizeSupported(configuration.width, configuration.height) != false
-            }.getOrDefault(false)
-            if (!sizeSupported) return@mapNotNull null
+            if (!capabilities.supportsH264Main(configuration)) return@mapNotNull null
 
             val evidence = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 when {
@@ -414,8 +434,26 @@ private fun selectAvcDecoder(configuration: DisplayConfigPayload): DecoderSelect
 
     return candidates.firstOrNull()
         ?: throw IllegalStateException(
-            "No Android H.264 decoder supports ${configuration.width}x${configuration.height}",
+            "No Android H.264 Main decoder supports ${configuration.width}x${configuration.height} " +
+                "at ${configuration.refreshMillihz} mHz and ${configuration.bitrateKbps} kbps",
         )
+}
+
+private fun MediaCodecInfo.CodecCapabilities.supportsH264Main(
+    configuration: DisplayConfigPayload,
+): Boolean {
+    if (profileLevels.none { it.profile == MediaCodecInfo.CodecProfileLevel.AVCProfileMain }) {
+        return false
+    }
+    val video = videoCapabilities ?: return false
+    val refreshHertz = configuration.refreshMillihz.toDouble() / 1_000.0
+    val sizeAndRateSupported = runCatching {
+        video.areSizeAndRateSupported(configuration.width, configuration.height, refreshHertz)
+    }.getOrDefault(false)
+    if (!sizeAndRateSupported) return false
+    val bitrateBitsPerSecond = configuration.bitrateKbps.toLong() * 1_000L
+    return bitrateBitsPerSecond <= Int.MAX_VALUE &&
+        video.bitrateRange.contains(bitrateBitsPerSecond.toInt())
 }
 
 private fun createMediaFormat(
@@ -429,6 +467,9 @@ private fun createMediaFormat(
 ).apply {
     setByteBuffer("csd-0", ByteBuffer.wrap(parameterSets.sequenceParameterSetCsd()))
     setByteBuffer("csd-1", ByteBuffer.wrap(parameterSets.pictureParameterSetCsd()))
+    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileMain)
+    setFloat(MediaFormat.KEY_FRAME_RATE, configuration.refreshMillihz.toFloat() / 1_000f)
+    setInteger(MediaFormat.KEY_BIT_RATE, configuration.bitrateKbps.toLong().times(1_000L).toInt())
     setInteger(MediaFormat.KEY_PRIORITY, 0)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && lowLatencySupported) {
         setInteger(MediaFormat.KEY_LOW_LATENCY, 1)

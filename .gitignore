@@ -13,6 +13,7 @@ dist/
 
 # Android
 .gradle/
+.kotlin/
 local.properties
 **/build/
 *.apk

@@ -15,6 +15,7 @@ enum class EndpointRole(val wireValue: Int) {
     }
 }
 
+@ConsistentCopyVisibility
 data class CodecCapabilities private constructor(val bits: Int) {
     fun contains(other: CodecCapabilities): Boolean = bits and other.bits == other.bits
 
@@ -37,6 +38,7 @@ data class CodecCapabilities private constructor(val bits: Int) {
     }
 }
 
+@ConsistentCopyVisibility
 data class InputCapabilities private constructor(val bits: Int) {
     fun contains(other: InputCapabilities): Boolean = bits and other.bits == other.bits
 
@@ -59,6 +61,7 @@ data class InputCapabilities private constructor(val bits: Int) {
     }
 }
 
+@ConsistentCopyVisibility
 data class FeatureFlags private constructor(val bits: UInt) {
     fun contains(other: FeatureFlags): Boolean = bits and other.bits == other.bits
 

@@ -28,6 +28,9 @@ data class AndroidInputEmission(
 /** Android event adapter for a focusable decoder SurfaceView. */
 class AndroidInputController(
     private val emit: (AndroidInputEmission) -> Unit,
+    private val monotonicMicros: () -> ULong = {
+        android.os.SystemClock.elapsedRealtimeNanos().toULong() / NANOS_PER_MICROSECOND
+    },
 ) {
     private val touchContacts = TouchContactTracker()
     private val lastTouchPixels = mutableMapOf<Int, RemotePixel>()
@@ -197,8 +200,7 @@ class AndroidInputController(
         emit(
             AndroidInputEmission(
                 payload = InputPayload(
-                    timestampMicros = android.os.SystemClock.elapsedRealtimeNanos().toULong() /
-                        NANOS_PER_MICROSECOND,
+                    timestampMicros = monotonicMicros(),
                     event = FocusInput(focused),
                 ),
                 delivery = InputDelivery.Critical,
@@ -207,8 +209,7 @@ class AndroidInputController(
     }
 
     private fun cancelActiveTouches() {
-        val timestamp = android.os.SystemClock.elapsedRealtimeNanos().toULong() /
-            NANOS_PER_MICROSECOND
+        val timestamp = monotonicMicros()
         touchContacts.cancelAll().forEach { (platformId, contactId) ->
             emit.touch(
                 timestamp = timestamp,
