@@ -14,14 +14,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ladoflow_protocol::{
-    DecodeOutcome, FRAME_HEADER_LEN, Frame as WireFrame, FrameDecoder, MAX_CONTROL_PAYLOAD,
-    MAX_MEDIA_PAYLOAD, MessageType,
-};
+use ladoflow_protocol::{FRAME_HEADER_LEN, MAX_CONTROL_PAYLOAD, MAX_MEDIA_PAYLOAD};
 use ladoflow_transport::{
     AccessoryControlIo, AccessoryIdentity, AoaNegotiationError, Channel, ConnectionState,
-    LoopbackConfig, LoopbackEndpoint, Packet, PacketTransport, QueueLimits, ReceiveError,
-    SendError, SendReport, is_aoa_app_accessory, loopback_pair, negotiate_accessory_mode,
+    LdflPacketDecoder, LdflPacketMux, LoopbackConfig, LoopbackEndpoint, Packet, PacketTransport,
+    QueueLimits, ReceiveError, SendError, SendReport, is_aoa_app_accessory, loopback_pair,
+    negotiate_accessory_mode,
 };
 use rusb::{ConfigDescriptor, Context, Device, DeviceHandle, Direction, TransferType, UsbContext};
 
@@ -642,12 +640,15 @@ fn pump_bulk_stream(
     cancel: &AtomicBool,
     status: &Arc<Mutex<LinkStatus>>,
 ) -> Result<(), String> {
-    let mut decoder = FrameDecoder::new();
+    let mut decoder = LdflPacketDecoder::new();
     let mut read_buffer = vec![0_u8; BULK_TRANSFER_BYTES];
-    let mut outgoing = OutgoingMux::default();
+    let mut outgoing = LdflPacketMux::default();
 
     while !cancel.load(Ordering::Acquire) {
-        if let Some(packet) = outgoing.next(device_endpoint)? {
+        if let Some(packet) = outgoing
+            .next(device_endpoint)
+            .map_err(|error| format!("Android USB outgoing LDFL queue is invalid: {error}"))?
+        {
             let written = write_chunked(packet.payload(), |chunk| {
                 handle.write_bulk(endpoints.output, chunk, BULK_WRITE_TIMEOUT)
             })?;
@@ -661,16 +662,11 @@ fn pump_bulk_stream(
         match handle.read_bulk(endpoints.input, &mut read_buffer, BULK_READ_TIMEOUT) {
             Ok(0) | Err(rusb::Error::Timeout) => {}
             Ok(count) => {
-                let frames = decoder
+                let packets = decoder
                     .push(&read_buffer[..count])
                     .map_err(|error| format!("Android USB LDFL stream is invalid: {error}"))?;
-                let frame_count = frames.len();
-                for frame in frames {
-                    let packet = if frame.header().kind() == MessageType::VideoFrame {
-                        Packet::media(frame.encode())
-                    } else {
-                        Packet::control(frame.encode())
-                    };
+                let frame_count = packets.len();
+                for packet in packets {
                     device_endpoint.try_send(packet).map_err(|error| {
                         format!("Android USB inbound queue rejected a frame: {error}")
                     })?;
@@ -687,71 +683,6 @@ fn pump_bulk_stream(
         }
     }
     Ok(())
-}
-
-#[derive(Default)]
-struct OutgoingMux {
-    control: Option<Packet>,
-    media: Option<Packet>,
-}
-
-impl OutgoingMux {
-    fn next(&mut self, endpoint: &mut LoopbackEndpoint) -> Result<Option<Packet>, String> {
-        if self.control.is_none() {
-            self.control = endpoint
-                .try_receive(Channel::Control)
-                .map_err(|error| format!("Android USB outgoing control queue failed: {error}"))?;
-        }
-        if self.media.is_none() {
-            self.media = endpoint
-                .try_receive(Channel::Media)
-                .map_err(|error| format!("Android USB outgoing media queue failed: {error}"))?;
-        }
-
-        match (&self.control, &self.media) {
-            (Some(control), Some(media)) => {
-                let control_sequence = outgoing_sequence(control)?;
-                let media_sequence = outgoing_sequence(media)?;
-                if control_sequence == media_sequence {
-                    return Err(format!(
-                        "Android USB outgoing queues contain duplicate LDFL sequence {control_sequence}"
-                    ));
-                }
-                if control_sequence < media_sequence {
-                    Ok(self.control.take())
-                } else {
-                    Ok(self.media.take())
-                }
-            }
-            (Some(_), None) => Ok(self.control.take()),
-            (None, Some(_)) => Ok(self.media.take()),
-            (None, None) => Ok(None),
-        }
-    }
-}
-
-fn outgoing_sequence(packet: &Packet) -> Result<u64, String> {
-    let DecodeOutcome::Complete { frame, consumed } = WireFrame::decode_prefix(packet.payload())
-        .map_err(|error| format!("Android USB outgoing LDFL frame is invalid: {error}"))?
-    else {
-        return Err("Android USB outgoing queue contains a partial LDFL frame".to_owned());
-    };
-    if consumed != packet.len() {
-        return Err("Android USB outgoing LDFL frame has trailing bytes".to_owned());
-    }
-    let expected_channel = if frame.header().kind() == MessageType::VideoFrame {
-        Channel::Media
-    } else {
-        Channel::Control
-    };
-    if packet.channel() != expected_channel {
-        return Err(format!(
-            "Android USB outgoing {:?} is queued on the wrong {:?} channel",
-            frame.header().kind(),
-            packet.channel()
-        ));
-    }
-    Ok(frame.header().sequence())
 }
 
 fn write_chunked<E: std::fmt::Display>(
@@ -837,10 +768,12 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use ladoflow_protocol::{Frame as WireFrame, FrameFlags, MessageType};
-    use ladoflow_transport::{Packet, PacketTransport, loopback_pair};
+    use ladoflow_transport::{
+        LdflPacketMux, Packet, PacketTransport, ldfl_packet_sequence, loopback_pair,
+    };
 
     use super::{
-        BULK_TRANSFER_BYTES, FRAME_HEADER_LEN, MAX_CONTROL_PAYLOAD, MAX_MEDIA_PAYLOAD, OutgoingMux,
+        BULK_TRANSFER_BYTES, FRAME_HEADER_LEN, MAX_CONTROL_PAYLOAD, MAX_MEDIA_PAYLOAD,
         USB_QUEUE_CONFIG, ensure_not_cancelled, is_android_probe_candidate, write_chunked,
     };
 
@@ -909,7 +842,7 @@ mod tests {
         host.try_send(Packet::control(control))
             .expect("control queue accepts frame");
 
-        let mut mux = OutgoingMux::default();
+        let mut mux = LdflPacketMux::default();
         let first = mux
             .next(&mut device)
             .expect("queue remains connected")
@@ -918,8 +851,8 @@ mod tests {
             .next(&mut device)
             .expect("queue remains connected")
             .expect("control frame is available");
-        assert_eq!(super::outgoing_sequence(&first), Ok(3));
-        assert_eq!(super::outgoing_sequence(&second), Ok(4));
+        assert_eq!(ldfl_packet_sequence(&first), Ok(3));
+        assert_eq!(ldfl_packet_sequence(&second), Ok(4));
         assert!(
             mux.next(&mut device)
                 .expect("queue remains connected")
@@ -941,15 +874,16 @@ mod tests {
         host.try_send(Packet::media(media))
             .expect("media queue accepts frame");
         assert!(
-            OutgoingMux::default()
+            LdflPacketMux::default()
                 .next(&mut device)
                 .expect_err("duplicate sequence is rejected")
+                .to_string()
                 .contains("duplicate")
         );
 
         let wrong = WireFrame::new(MessageType::Ping, FrameFlags::NONE, 10, b"wrong")
             .expect("valid control frame")
             .encode();
-        assert!(super::outgoing_sequence(&Packet::media(wrong)).is_err());
+        assert!(ldfl_packet_sequence(&Packet::media(wrong)).is_err());
     }
 }

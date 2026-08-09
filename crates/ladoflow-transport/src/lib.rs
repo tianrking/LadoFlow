@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod aoa;
+mod ldfl_stream;
 mod loopback;
 mod packet;
 mod transport;
@@ -24,6 +25,7 @@ pub use aoa::{
     AccessoryIdentity, AccessoryIdentityError, AoaNegotiationError, AoaProtocolVersion,
     is_aoa_app_accessory, negotiate_accessory_mode,
 };
+pub use ldfl_stream::{LdflPacketDecoder, LdflPacketMux, LdflStreamError, ldfl_packet_sequence};
 pub use loopback::{DisconnectReport, LoopbackConfig, LoopbackEndpoint, loopback_pair};
 pub use packet::{Channel, Packet, SupersessionKey};
 pub use transport::{

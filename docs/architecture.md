@@ -78,6 +78,9 @@ machine, so true extended-desktop behavior is not counted as physically proven.
 The USB path enforces monotonically increasing sequence numbers per sender,
 uses an operating-system random session nonce, validates active input,
 telemetry, ping/pong, and error frames, and reports failures to the desktop UI.
+Raw byte-stream adapters share one bounded LDFL decoder and one control/media
+multiplexer in `ladoflow-transport`; USB bulk and future TCP links therefore
+derive channels and restore global wire order with the same fail-closed rules.
 After an explicitly started session loses its bulk connection, the Windows
 composition layer tears down the native media/input generation and performs a
 cancellable, exponentially backed-off AOA reopen against a 60-second retry

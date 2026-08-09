@@ -1748,6 +1748,9 @@ version = "0.1.0"
 [[package]]
 name = "ladoflow-transport"
 version = "0.1.0"
+dependencies = [
+ "ladoflow-protocol",
+]
 
 [[package]]
 name = "libappindicator"

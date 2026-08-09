@@ -130,7 +130,9 @@ claim the app interface before reporting readiness.
 4. [x] Keep the claimed handle open in a cancellable duplex worker, merge
    already-numbered control/media heads by global LDFL sequence, cap writes at
    64 KiB, retry short writes, and feed 64 KiB reads into the bounded LDFL
-   incremental decoder. Any control priority must happen before sequence
+   incremental decoder. The decoder, channel classifier, and global-sequence
+   mux now live in the shared transport crate so TCP can use the identical
+   byte-stream contract. Any control priority must happen before sequence
    assignment; wire order is always monotonic.
 5. [x] Compose the worker's bounded host endpoint into the runtime for
    Hello/Capabilities/DisplayConfig, monotonic peer sequencing, Ping/Pong,
