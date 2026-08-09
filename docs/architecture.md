@@ -78,7 +78,15 @@ machine, so true extended-desktop behavior is not counted as physically proven.
 The USB path enforces monotonically increasing sequence numbers per sender,
 uses an operating-system random session nonce, validates active input,
 telemetry, ping/pong, and error frames, and reports failures to the desktop UI.
-The remaining proof boundary is a sustained physical Windows-to-Android run.
+After an explicitly started session loses its bulk connection, the Windows
+composition layer tears down the native media/input generation and performs a
+cancellable, exponentially backed-off AOA reopen against a 60-second retry
+deadline; an in-flight bounded USB or protocol operation is allowed to return
+before the final failure is published. A reopened physical transport always
+negotiates a fresh protocol generation; no old sequence cursor or encoded-frame
+queue crosses the disconnect. Passive USB status remains read-only. The
+remaining proof boundary is a sustained physical Windows-to-Android
+detach/reattach run.
 
 The implementation lives in these ownership boundaries:
 

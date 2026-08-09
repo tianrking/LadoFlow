@@ -80,14 +80,27 @@ Focus loss, disconnect, and worker teardown release every tracked button, key,
 and touch contact. Windows UIPI can still block input into a process running at a
 higher integrity level, which is surfaced as an error rather than hidden.
 
+An unexpected bulk-link loss now moves the host into `recovering`, tears down
+the capture/encoder/input generation, clears stale queued sequence history, and
+retains cumulative telemetry plus the requested display configuration. The
+runtime retries only after the user-authorized USB session has existed, backs
+off from 250 ms to 2 seconds within a 60-second window, and makes both the delay
+and AOA re-enumeration wait cancellable. Every recovered physical connection
+performs a fresh Hello/Capabilities/DisplayConfig exchange and starts its LDFL
+sequence generation again; it never resumes an old sequence cursor. Read-only
+status still never switches a device into AOA mode. These transitions and
+cancellation boundaries are automated-test verified, while physical detach and
+reattach endurance remains an open proof item.
+
 A separate native worker captures the UI-selected Windows monitor and
 continuously hardware-encodes its GPU surfaces as timestamped H.264 Main access
 units. The session paces those units, marks IDR/clean-point frames, and sends
 every interdependent H.264 frame reliably over the same globally ordered LDFL
 stream while control remains responsive. Capture cancellation, source removal,
 resize, frame closure, and encoder shutdown are explicit. Automatic D3D
-device-loss recovery remains open, and the combined video/input USB path still
-requires proof with a physical Android device.
+device-loss recovery remains open independently of USB link recovery, and the
+combined video/input USB path still requires proof with a physical Android
+device.
 
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).

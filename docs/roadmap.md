@@ -55,7 +55,8 @@ path; it is not automatically a release claim.
 - [ ] Physical Windows-to-Android USB interoperability without ADB
 - [ ] H.264 hardware decoder and renderer
 - [ ] Touch and pointer return path
-- [ ] Automatic disconnect/reconnect behavior
+- [x] Host-side bounded/cancellable USB disconnect recovery with fresh protocol negotiation
+- [ ] Physical detach/reconnect endurance and cancellation test
 - [ ] macOS and Windows USB interoperability test
 
 ## M5 — Windows virtual extended display

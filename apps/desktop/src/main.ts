@@ -331,7 +331,9 @@ function render(snapshot: HostSnapshot) {
   const isRunning =
     snapshot.session.phase === "streaming" ||
     snapshot.session.phase === "connected" ||
-    snapshot.session.phase === "negotiating";
+    snapshot.session.phase === "negotiating" ||
+    snapshot.session.phase === "recovering";
+  const usbMode = usbConnected || (isUsbSession && isRunning);
 
   elements.appVersion.textContent = `LadoFlow ${snapshot.appVersion}`;
   elements.hostPlatform.textContent = formatPlatform(snapshot);
@@ -339,18 +341,20 @@ function render(snapshot: HostSnapshot) {
   elements.protocolVersion.textContent = `LDFL v${snapshot.protocolVersion}`;
   elements.sessionTitle.textContent = presentation.title;
   elements.sessionCopy.textContent = snapshot.session.lastError ?? presentation.copy;
-  elements.start.textContent = usbConnected ? "Start USB stream" : "Start loopback";
-  elements.setupTitle.textContent = usbConnected ? "USB screen stream" : "Synthetic stream";
-  elements.mediaMode.textContent = usbConnected
+  elements.start.textContent = usbMode ? "Start USB stream" : "Start loopback";
+  elements.setupTitle.textContent = usbMode ? "USB screen stream" : "Synthetic stream";
+  elements.mediaMode.textContent = usbMode
     ? "GPU capture · hardware H.264 Main"
     : "Codec-neutral synthetic";
-  elements.transportMode.textContent = usbConnected
+  elements.transportMode.textContent = usbMode
     ? "Android Open Accessory USB"
     : "In-memory duplex";
   setBadge(elements.sessionBadge, presentation.label, presentation.tone);
   elements.linkPath.classList.toggle(
     "is-active",
-    snapshot.session.phase === "streaming" || snapshot.session.phase === "connected",
+    snapshot.session.phase === "streaming" ||
+      snapshot.session.phase === "connected" ||
+      snapshot.session.phase === "recovering",
   );
   elements.start.disabled = busy || isRunning;
   elements.stop.disabled = busy || !isRunning;
@@ -392,7 +396,7 @@ function render(snapshot: HostSnapshot) {
   const hasNativeCaptureProbe = snapshot.os === "macos" || snapshot.os === "windows";
   elements.runCaptureProbe.hidden = !hasNativeCaptureProbe || !permissionGranted;
   elements.runCaptureProbe.disabled = busy;
-  elements.prepareAndroidUsb.hidden = snapshot.os !== "windows" || usbConnected;
+  elements.prepareAndroidUsb.hidden = snapshot.os !== "windows" || usbMode;
   elements.prepareAndroidUsb.disabled =
     busy || isRunning || snapshot.platform.usbLinkState === "connecting";
   elements.disconnectAndroidUsb.hidden = snapshot.os !== "windows" || !usbConnected;

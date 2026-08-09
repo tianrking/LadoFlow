@@ -29,6 +29,8 @@ use super::super::{UsbAccessoryProbeReport, UsbLinkState};
 
 const REENUMERATION_TIMEOUT: Duration = Duration::from_secs(8);
 const REENUMERATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const RECONNECT_CANCELLED_DETAIL: &str = "Android USB reconnection was cancelled";
 const BULK_TRANSFER_BYTES: usize = 64 * 1_024;
 const BULK_READ_TIMEOUT: Duration = Duration::from_millis(2);
 const BULK_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -158,6 +160,25 @@ impl AccessoryControlIo for ControlHandle<'_> {
 
 impl UsbAccessoryManager {
     pub fn prepare(&self) -> UsbAccessoryProbeReport {
+        self.prepare_with_cancel(None)
+    }
+
+    /// Reopen a link that the user previously authorized through `prepare`.
+    /// This may repeat AOA mode switching, but is never called by background
+    /// status collection or before an explicit USB session has started.
+    pub fn reconnect(&self, cancel: &AtomicBool) -> Result<(), String> {
+        let report = self.prepare_with_cancel(Some(cancel));
+        if report.passed {
+            Ok(())
+        } else {
+            Err(report.detail)
+        }
+    }
+
+    fn prepare_with_cancel(&self, cancel: Option<&AtomicBool>) -> UsbAccessoryProbeReport {
+        if cancellation_requested(cancel) {
+            return self.cancelled_report();
+        }
         if let Err(error) = self.stop_active_session() {
             return UsbAccessoryProbeReport::failed(error);
         }
@@ -167,9 +188,12 @@ impl UsbAccessoryManager {
             ..LinkStatus::default()
         });
 
-        let opened = match open_android_accessory() {
+        let opened = match open_android_accessory(cancel) {
             Ok(opened) => opened,
             Err(error) => {
+                if cancellation_requested(cancel) {
+                    return self.cancelled_report();
+                }
                 self.replace_status(LinkStatus {
                     phase: UsbLinkState::Failed,
                     detail: error.clone(),
@@ -178,8 +202,16 @@ impl UsbAccessoryManager {
                 return UsbAccessoryProbeReport::failed(error);
             }
         };
+        if cancellation_requested(cancel) {
+            drop(opened);
+            return self.cancelled_report();
+        }
         let mut report = opened.report.clone();
         match start_bulk_session(opened, &self.inner.status) {
+            Ok(session) if cancellation_requested(cancel) => {
+                let _result = session.stop();
+                self.cancelled_report()
+            }
             Ok(session) => {
                 *self.lock_session() = Some(session);
                 "connected".clone_into(&mut report.state);
@@ -207,6 +239,16 @@ impl UsbAccessoryManager {
         self.replace_status(LinkStatus {
             phase: UsbLinkState::Ready,
             detail: "Android USB session disconnected by the user".to_owned(),
+            ..LinkStatus::default()
+        });
+        Ok(())
+    }
+
+    pub fn close_runtime_session(&self) -> Result<(), String> {
+        self.stop_active_session()?;
+        self.replace_status(LinkStatus {
+            phase: UsbLinkState::Ready,
+            detail: "Android USB transport closed with the display session".to_owned(),
             ..LinkStatus::default()
         });
         Ok(())
@@ -259,6 +301,16 @@ impl UsbAccessoryManager {
 
     fn replace_status(&self, status: LinkStatus) {
         *self.lock_status() = status;
+    }
+
+    fn cancelled_report(&self) -> UsbAccessoryProbeReport {
+        let detail = RECONNECT_CANCELLED_DETAIL.to_owned();
+        self.replace_status(LinkStatus {
+            phase: UsbLinkState::Ready,
+            detail: detail.clone(),
+            ..LinkStatus::default()
+        });
+        UsbAccessoryProbeReport::failed(detail)
     }
 }
 
@@ -320,10 +372,13 @@ pub(super) fn collect_status() -> String {
     }
 }
 
-fn open_android_accessory() -> Result<OpenedAccessory, String> {
+fn open_android_accessory(cancel: Option<&AtomicBool>) -> Result<OpenedAccessory, String> {
+    ensure_not_cancelled(cancel)?;
     let context =
         Context::new().map_err(|error| format!("failed to initialize libusb: {error}"))?;
+    ensure_not_cancelled(cancel)?;
     if let Some(device) = find_accessory_devices(&context)?.into_iter().next() {
+        ensure_not_cancelled(cancel)?;
         return open_accessory(&device, None);
     }
 
@@ -337,6 +392,7 @@ fn open_android_accessory() -> Result<OpenedAccessory, String> {
     let mut failures = Vec::new();
 
     for device in devices.iter() {
+        ensure_not_cancelled(cancel)?;
         let descriptor = match device.device_descriptor() {
             Ok(descriptor) => descriptor,
             Err(error) => {
@@ -366,16 +422,20 @@ fn open_android_accessory() -> Result<OpenedAccessory, String> {
             }
         };
         attempted += 1;
+        ensure_not_cancelled(cancel)?;
         let negotiation = negotiate_accessory_mode(&mut ControlHandle(&handle), &identity);
         match negotiation {
             Ok(protocol) => {
                 drop(handle);
+                ensure_not_cancelled(cancel)?;
                 let started = Instant::now();
                 while started.elapsed() < REENUMERATION_TIMEOUT {
+                    ensure_not_cancelled(cancel)?;
                     if let Some(accessory) = find_accessory_devices(&context)?.into_iter().next() {
+                        ensure_not_cancelled(cancel)?;
                         return open_accessory(&accessory, Some(protocol.get()));
                     }
-                    thread::sleep(REENUMERATION_POLL_INTERVAL);
+                    wait_cancellable(cancel, REENUMERATION_POLL_INTERVAL)?;
                 }
                 return Err(format!(
                     "Android accepted AOA {} but did not re-enumerate as a Google accessory within {} seconds",
@@ -403,6 +463,34 @@ fn open_android_accessory() -> Result<OpenedAccessory, String> {
         if evidence.is_empty() { "" } else { ": " },
         evidence
     ))
+}
+
+fn cancellation_requested(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|flag| flag.load(Ordering::Acquire))
+}
+
+fn ensure_not_cancelled(cancel: Option<&AtomicBool>) -> Result<(), String> {
+    if cancellation_requested(cancel) {
+        Err(RECONNECT_CANCELLED_DETAIL.to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+fn wait_cancellable(cancel: Option<&AtomicBool>, duration: Duration) -> Result<(), String> {
+    let Some(cancel) = cancel else {
+        thread::sleep(duration);
+        return Ok(());
+    };
+    let deadline = Instant::now() + duration;
+    loop {
+        ensure_not_cancelled(Some(cancel))?;
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        thread::sleep((deadline - now).min(CANCELLATION_POLL_INTERVAL));
+    }
 }
 
 fn find_accessory_devices(context: &Context) -> Result<Vec<Device<Context>>, String> {
@@ -746,12 +834,14 @@ fn host_description() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
     use ladoflow_protocol::{Frame as WireFrame, FrameFlags, MessageType};
     use ladoflow_transport::{Packet, PacketTransport, loopback_pair};
 
     use super::{
         BULK_TRANSFER_BYTES, FRAME_HEADER_LEN, MAX_CONTROL_PAYLOAD, MAX_MEDIA_PAYLOAD, OutgoingMux,
-        USB_QUEUE_CONFIG, is_android_probe_candidate, write_chunked,
+        USB_QUEUE_CONFIG, ensure_not_cancelled, is_android_probe_candidate, write_chunked,
     };
 
     #[test]
@@ -761,6 +851,14 @@ mod tests {
         assert!(!is_android_probe_candidate(0x18d1, 0x2d00, 0x00));
         assert!(!is_android_probe_candidate(0x1234, 0x5678, 0x03));
         assert!(!is_android_probe_candidate(0, 0, 0));
+    }
+
+    #[test]
+    fn reconnect_cancellation_is_observed_before_usb_work() {
+        let cancel = AtomicBool::new(true);
+        let error = ensure_not_cancelled(Some(&cancel)).expect_err("cancellation is reported");
+        assert!(error.contains("cancelled"));
+        ensure_not_cancelled(None).expect("explicit preparation has no cancellation flag");
     }
 
     #[test]

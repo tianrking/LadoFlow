@@ -2,6 +2,9 @@ use serde::Serialize;
 use std::time::Duration;
 
 #[cfg(not(target_os = "windows"))]
+use std::sync::atomic::AtomicBool;
+
+#[cfg(not(target_os = "windows"))]
 use ladoflow_protocol::InputEvent;
 
 #[cfg(not(target_os = "windows"))]
@@ -288,10 +291,23 @@ impl UsbAccessoryManager {
         ))
     }
 
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    pub fn reconnect(&self, _cancel: &AtomicBool) -> Result<(), String> {
+        Err(format!(
+            "Android Open Accessory reconnection is not implemented for {} yet",
+            std::env::consts::OS
+        ))
+    }
+
     // Callers share one fallible disconnect path with the Windows owner even
     // though this target has no resource to release yet.
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     pub fn disconnect(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    pub fn close_runtime_session(&self) -> Result<(), String> {
         Ok(())
     }
 

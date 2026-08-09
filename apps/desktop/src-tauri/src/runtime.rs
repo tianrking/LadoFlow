@@ -40,6 +40,10 @@ const MEDIA_STREAM_KEY: SupersessionKey = SupersessionKey::new(1);
 const USB_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
 const USB_CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const USB_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const USB_RECONNECT_WINDOW: Duration = Duration::from_secs(60);
+const USB_RECONNECT_INITIAL_DELAY: Duration = Duration::from_millis(250);
+const USB_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(2);
+const USB_RECONNECT_CANCEL_POLL: Duration = Duration::from_millis(25);
 const SENT_VIDEO_HISTORY: usize = 1_024;
 const LOOPBACK_TRANSPORT_NAME: &str = "In-memory duplex";
 const USB_TRANSPORT_NAME: &str = "Android Open Accessory USB";
@@ -71,6 +75,7 @@ enum SessionPhaseView {
     Negotiating,
     Connected,
     Streaming,
+    Recovering,
     Stopped,
     Failed,
 }
@@ -198,6 +203,43 @@ impl SharedState {
         self.last_error = None;
     }
 
+    fn begin_usb_recovery(&mut self, error: &str, attempt: u32, delay: Duration) {
+        if let Some(session) = self.session.as_mut() {
+            let _result = session.transport_lost();
+        }
+        self.phase = SessionPhaseView::Recovering;
+        self.session = None;
+        self.peer_name = None;
+        self.last_error = Some(format!(
+            "USB link lost: {error}. Reconnect attempt {attempt} starts in {} ms",
+            delay.as_millis()
+        ));
+        self.queue_depth = 0;
+        self.sent_video_ordinals.clear();
+    }
+
+    fn begin_usb_renegotiation(&mut self, config: LoopbackConfig) {
+        self.phase = SessionPhaseView::Negotiating;
+        self.session = None;
+        self.config = Some(config);
+        self.peer_name = None;
+        self.last_error = None;
+        self.queue_depth = 0;
+        self.sent_video_ordinals.clear();
+    }
+
+    fn fail_usb_session(&mut self, error: String) {
+        if let Some(session) = self.session.as_mut() {
+            let _result = session.transport_lost();
+        }
+        self.phase = SessionPhaseView::Failed;
+        self.session = None;
+        self.peer_name = None;
+        self.last_error = Some(error);
+        self.queue_depth = 0;
+        self.sent_video_ordinals.clear();
+    }
+
     fn snapshot(&self, platform: PlatformStatus) -> HostSnapshot {
         let uptime = self
             .started_at
@@ -272,6 +314,7 @@ impl DesktopRuntime {
                     SessionPhaseView::Negotiating
                         | SessionPhaseView::Connected
                         | SessionPhaseView::Streaming
+                        | SessionPhaseView::Recovering
                 )
         };
         if usb_session_active {
@@ -400,6 +443,14 @@ impl Drop for DesktopRuntime {
     }
 }
 
+struct UsbRuntimeSessionGuard(UsbAccessoryManager);
+
+impl Drop for UsbRuntimeSessionGuard {
+    fn drop(&mut self) {
+        let _result = self.0.close_runtime_session();
+    }
+}
+
 fn run_usb_control_session(
     shared: &Arc<Mutex<SharedState>>,
     cancel: &AtomicBool,
@@ -407,17 +458,91 @@ fn run_usb_control_session(
     display_id: Option<&str>,
     mut transport: UsbAccessoryManager,
 ) {
-    let result = run_usb_control_session_inner(shared, cancel, config, display_id, &mut transport);
-    if let Err(error) = result {
+    let _session_guard = UsbRuntimeSessionGuard(transport.clone());
+    let mut reconnect_deadline = None::<Instant>;
+    let mut reconnect_attempt = 1_u32;
+
+    loop {
+        let error =
+            match run_usb_control_session_inner(shared, cancel, config, display_id, &mut transport)
+            {
+                Ok(()) => return,
+                Err(error) => error,
+            };
         if cancel.load(Ordering::Acquire) {
             return;
         }
-        let mut state = lock_arc(shared);
-        if let Some(session) = state.session.as_mut() {
-            let _result = session.transport_lost();
+
+        if transport.connection_state() != ConnectionState::Disconnected {
+            lock_arc(shared).fail_usb_session(error);
+            return;
         }
-        state.phase = SessionPhaseView::Failed;
-        state.last_error = Some(error);
+
+        let had_streamed = matches!(lock_arc(shared).phase, SessionPhaseView::Streaming);
+        if had_streamed || reconnect_deadline.is_none() {
+            reconnect_deadline = Some(Instant::now() + USB_RECONNECT_WINDOW);
+            reconnect_attempt = 1;
+        }
+        let deadline = reconnect_deadline.expect("USB reconnect deadline is initialized");
+        let mut last_error = error;
+
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                lock_arc(shared).fail_usb_session(format!(
+                    "Android USB did not recover within {} seconds: {last_error}",
+                    USB_RECONNECT_WINDOW.as_secs()
+                ));
+                return;
+            }
+            let delay = usb_reconnect_delay(reconnect_attempt).min(deadline - now);
+            lock_arc(shared).begin_usb_recovery(&last_error, reconnect_attempt, delay);
+            if !wait_cancellable(cancel, delay) {
+                return;
+            }
+            if Instant::now() >= deadline {
+                lock_arc(shared).fail_usb_session(format!(
+                    "Android USB did not recover within {} seconds: {last_error}",
+                    USB_RECONNECT_WINDOW.as_secs()
+                ));
+                return;
+            }
+
+            match transport.reconnect(cancel) {
+                Ok(()) => {
+                    lock_arc(shared).begin_usb_renegotiation(config);
+                    break;
+                }
+                Err(error) => {
+                    if cancel.load(Ordering::Acquire) {
+                        return;
+                    }
+                    last_error = error;
+                    reconnect_attempt = reconnect_attempt.saturating_add(1);
+                }
+            }
+        }
+    }
+}
+
+fn usb_reconnect_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(3);
+    USB_RECONNECT_INITIAL_DELAY
+        .saturating_mul(1_u32 << exponent)
+        .min(USB_RECONNECT_MAX_DELAY)
+}
+
+fn wait_cancellable(cancel: &AtomicBool, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        thread::sleep((deadline - now).min(USB_RECONNECT_CANCEL_POLL));
     }
 }
 
@@ -1055,6 +1180,7 @@ mod tests {
         DesktopRuntime, H264AccessUnit, LoopbackConfig, SessionPhaseView, SharedState,
         UsbControlContext, align_media_clock, apply_usb_telemetry, handle_usb_control,
         negotiated_session, run_usb_control_session_inner, send_usb_h264_access_unit,
+        usb_reconnect_delay, wait_cancellable,
     };
 
     #[test]
@@ -1078,6 +1204,68 @@ mod tests {
 
         let stopped = runtime.stop().expect("stop loopback");
         assert!(matches!(stopped.session.phase, SessionPhaseView::Stopped));
+    }
+
+    #[test]
+    fn usb_reconnect_backoff_is_bounded() {
+        assert_eq!(usb_reconnect_delay(0), Duration::from_millis(250));
+        assert_eq!(usb_reconnect_delay(1), Duration::from_millis(250));
+        assert_eq!(usb_reconnect_delay(2), Duration::from_millis(500));
+        assert_eq!(usb_reconnect_delay(3), Duration::from_secs(1));
+        assert_eq!(usb_reconnect_delay(4), Duration::from_secs(2));
+        assert_eq!(usb_reconnect_delay(u32::MAX), Duration::from_secs(2));
+
+        let cancelled = AtomicBool::new(true);
+        assert!(!wait_cancellable(&cancelled, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn usb_recovery_preserves_telemetry_but_resets_connection_generation() {
+        let config = LoopbackConfig {
+            width: 1_920,
+            height: 1_080,
+            fps: 60,
+        };
+        let mut state = SharedState::new();
+        state.reset_for_usb_negotiation(config);
+        state.establish_usb_control(
+            config,
+            negotiated_session(config).expect("test session"),
+            "LadoFlow Android".to_owned(),
+        );
+        state.frames_produced = 120;
+        state.frames_presented = 117;
+        state.frames_dropped = 3;
+        state.frames_superseded = 2;
+        state.queue_depth = 7;
+        state.sent_video_ordinals.push_back((44, 120));
+        let started_at = state.started_at;
+
+        state.begin_usb_recovery("device detached", 2, Duration::from_millis(500));
+
+        assert!(matches!(state.phase, SessionPhaseView::Recovering));
+        assert!(state.session.is_none());
+        assert!(state.peer_name.is_none());
+        assert_eq!(state.frames_produced, 120);
+        assert_eq!(state.frames_presented, 117);
+        assert_eq!(state.frames_dropped, 3);
+        assert_eq!(state.frames_superseded, 2);
+        assert_eq!(state.queue_depth, 0);
+        assert!(state.sent_video_ordinals.is_empty());
+        assert_eq!(state.started_at, started_at);
+        assert!(
+            state
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("attempt 2"))
+        );
+
+        state.begin_usb_renegotiation(config);
+        assert!(matches!(state.phase, SessionPhaseView::Negotiating));
+        assert!(state.session.is_none());
+        assert!(state.last_error.is_none());
+        assert_eq!(state.frames_produced, 120);
+        assert_eq!(state.frames_presented, 117);
     }
 
     #[test]
