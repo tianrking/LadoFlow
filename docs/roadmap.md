@@ -50,7 +50,7 @@ path; it is not automatically a release claim.
 - [x] Shared AOA 1/2 negotiation contract and Windows explicit mode-switch/endpoint-claim probe
 - [x] Cancellable Windows bulk worker with bounded queues, 64 KiB transfer chunks, and LDFL stream decoding
 - [x] Desktop runtime USB control exchange with Hello, Capabilities, DisplayConfig, Ping/Pong, and failure diagnostics
-- [ ] Real encoded-video runtime to USB worker composition
+- [x] Real hardware-encoded H.264 runtime to USB worker composition (synthetic pixel source pending capture handoff)
 - [ ] Physical Windows-to-Android USB interoperability without ADB
 - [ ] H.264 hardware decoder and renderer
 - [ ] Touch and pointer return path

@@ -105,6 +105,9 @@ const elements = {
   sessionTitle: getElement("connection-title"),
   sessionCopy: getElement("session-copy"),
   linkPath: getElement("link-path"),
+  setupTitle: getElement("setup-title"),
+  mediaMode: getElement("media-mode"),
+  transportMode: getElement("transport-mode"),
   start: getButton("start-session"),
   stop: getButton("stop-session"),
   refresh: getButton("refresh-status"),
@@ -174,7 +177,7 @@ function setBadge(element: HTMLElement, label: string, tone: "idle" | "good" | "
   element.className = `badge badge--${tone}`;
 }
 
-function sessionPresentation(phase: SessionPhase) {
+function sessionPresentation(phase: SessionPhase, isUsbSession: boolean) {
   switch (phase) {
     case "negotiating":
       return {
@@ -184,16 +187,23 @@ function sessionPresentation(phase: SessionPhase) {
         tone: "warn" as const,
       };
     case "streaming":
-      return {
-        title: "Loopback display is live",
-        copy: "Synthetic frames are crossing the same bounded core path used by physical links.",
-        label: "Streaming",
-        tone: "good" as const,
-      };
+      return isUsbSession
+        ? {
+            title: "USB H.264 stream is live",
+            copy: "Hardware-encoded H.264 Main access units are paced over the ordered USB link. The current image is a deterministic test pattern until native capture is attached.",
+            label: "Streaming",
+            tone: "good" as const,
+          }
+        : {
+            title: "Loopback display is live",
+            copy: "Synthetic frames are crossing the same bounded core path used by physical links.",
+            label: "Streaming",
+            tone: "good" as const,
+          };
     case "connected":
       return {
         title: "USB display negotiated",
-        copy: "The host and Android display agreed on LDFL and H.264 settings. The production video source is the next pipeline stage.",
+        copy: "The host and Android display agreed on LDFL and H.264 Main settings. The Windows hardware encoder is preparing the first access-unit batch.",
         label: "Connected",
         tone: "good" as const,
       };
@@ -253,7 +263,9 @@ function renderDisplays(displays: DisplaySource[]) {
 }
 
 function render(snapshot: HostSnapshot) {
-  const presentation = sessionPresentation(snapshot.session.phase);
+  const usbConnected = snapshot.platform.usbLinkState === "connected";
+  const isUsbSession = snapshot.session.transport.includes("Android Open Accessory");
+  const presentation = sessionPresentation(snapshot.session.phase, isUsbSession);
   const isRunning =
     snapshot.session.phase === "streaming" ||
     snapshot.session.phase === "connected" ||
@@ -265,6 +277,14 @@ function render(snapshot: HostSnapshot) {
   elements.protocolVersion.textContent = `LDFL v${snapshot.protocolVersion}`;
   elements.sessionTitle.textContent = presentation.title;
   elements.sessionCopy.textContent = snapshot.session.lastError ?? presentation.copy;
+  elements.start.textContent = usbConnected ? "Start USB stream" : "Start loopback";
+  elements.setupTitle.textContent = usbConnected ? "USB encoded stream" : "Synthetic stream";
+  elements.mediaMode.textContent = usbConnected
+    ? "Hardware H.264 Main test pattern"
+    : "Codec-neutral synthetic";
+  elements.transportMode.textContent = usbConnected
+    ? "Android Open Accessory USB"
+    : "In-memory duplex";
   setBadge(elements.sessionBadge, presentation.label, presentation.tone);
   elements.linkPath.classList.toggle(
     "is-active",
@@ -294,7 +314,6 @@ function render(snapshot: HostSnapshot) {
   const hasNativeCaptureProbe = snapshot.os === "macos" || snapshot.os === "windows";
   elements.runCaptureProbe.hidden = !hasNativeCaptureProbe || !permissionGranted;
   elements.runCaptureProbe.disabled = busy;
-  const usbConnected = snapshot.platform.usbLinkState === "connected";
   elements.prepareAndroidUsb.hidden = snapshot.os !== "windows" || usbConnected;
   elements.prepareAndroidUsb.disabled =
     busy || isRunning || snapshot.platform.usbLinkState === "connecting";

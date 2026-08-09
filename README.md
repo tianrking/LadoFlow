@@ -48,11 +48,11 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 | Shared runtime | Negotiation, sessions, reconnect policy, telemetry, pacing, and bounded loopback implemented | Platform-neutral runtime used by every host and display |
 | Desktop host | Runnable Tauri 2 loopback and diagnostics UI | One shell with target-gated native services |
 | macOS host | Permission/display discovery plus a real ScreenCaptureKit IOSurface probe and local app bundle | Long-running capture/VideoToolbox pipeline, native virtual-display adapter, and notarized host |
-| Windows host | Physical-hardware-verified D3D11 capture plus a real Intel Quick Sync NV12-to-H.264 encode probe; Intel/NVIDIA MFT discovery | Long-running zero-copy capture/encode service and signed indirect-display driver |
+| Windows host | Physical-hardware-verified D3D11 capture plus a continuous Intel Quick Sync H.264 Main producer with timestamped access units | Replace the current synthetic NV12 source with long-running zero-copy capture, then add the signed indirect-display driver |
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
 | Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
 | iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
-| USB transport | Tested AOA 1/2 negotiation, cancellable Windows bulk I/O, and transport-driven Hello/Capabilities/DisplayConfig exchange; encoded runtime media and physical-device proof remain unfinished | Direct, authenticated device link |
+| USB transport | Tested AOA 1/2 negotiation, cancellable Windows bulk I/O, transport-driven handshake, globally ordered control/media frames, and paced real H.264 runtime packets; physical-device proof remains unfinished | Direct, authenticated device link |
 | Wi-Fi/LAN transport | Planned after USB | Explicitly paired local connection |
 
 No row above is a release claim. Follow the [roadmap](./docs/roadmap.md) and [GitHub milestones](https://github.com/tianrking/LadoFlow/milestones) for evidence-backed progress.

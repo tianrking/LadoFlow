@@ -125,8 +125,10 @@ claim the app interface before reporting readiness.
 5. [x] Compose the worker's bounded host endpoint into the runtime for
    Hello/Capabilities/DisplayConfig, monotonic peer sequencing, Ping/Pong,
    typed active control, cancellation, timeout, and failure diagnostics.
-6. [ ] Feed real encoded video into that established USB session; never send
-   the loopback's synthetic proof bytes as H.264.
+6. [x] Feed paced, timestamped, hardware-encoded H.264 Main access units into
+   the established USB session. The source is still synthetic NV12 pixels, but
+   the bitstream is real and no loopback proof bytes are mislabeled as H.264.
+   Interdependent frames are reliable rather than incorrectly superseded.
 7. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
    physical Android device.
 8. [ ] Replace development driver setup with a signed, installer-managed

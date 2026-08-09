@@ -51,10 +51,9 @@ inbound chunks feed the bounded LDFL incremental decoder. This prevents a later
 control frame from overtaking an earlier encoded frame on the USB byte stream.
 Read-only status never sends vendor requests; only the user's **Connect Android
 USB** action attempts a mode switch. **Disconnect Android USB** joins the worker
-and releases the interface. The current loopback media producer is not yet wired
-into this worker. This path has not been verified with a physical Android device,
-and Windows may need a signed WinUSB-compatible binding before libusb can access
-the interface.
+and releases the interface. This path has not been verified with a physical
+Android device, and Windows may need a signed WinUSB-compatible binding before
+libusb can access the interface.
 
 When the bulk link is connected, **Start session** selects the USB endpoint
 instead of the local proof endpoint. It sends Host Hello and Capabilities,
@@ -63,9 +62,14 @@ increasing peer sequence numbers, computes a bounded H.264 Main configuration,
 and sends DisplayConfig before entering the connected state. The host nonce is
 filled from the operating-system random source. Active control traffic is
 decoded and bounded; Ping receives Pong, Android Error fails the session, and
-Input/Telemetry are validated without yet injecting native Windows input. This
-is a real control-plane path, but it intentionally does not send the synthetic
-non-H.264 payload to Android.
+Input/Telemetry are validated without yet injecting native Windows input. A
+separate native worker then continuously hardware-encodes timestamped synthetic
+NV12 frames as H.264 Main access units. The session paces those units, marks
+IDR/clean-point frames, and sends every interdependent H.264 frame reliably over
+the same globally ordered LDFL stream while control remains responsive. This is
+real encoded media rather than the loopback's fake bytes, but the pixels are
+still a deterministic test pattern until the long-running D3D11 capture source
+is attached.
 
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).
