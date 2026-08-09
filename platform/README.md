@@ -12,3 +12,9 @@ Small target-gated adapters that can safely live in the desktop process begin in
 `apps/desktop/src-tauri/src/platform/`. Privileged services, drivers, signing,
 and installer projects belong here. Follow the concrete ownership and test
 sequence in [`docs/platform-handoff.md`](../docs/platform-handoff.md).
+
+The first privileged component now lives in
+[`windows/idd`](./windows/idd/): a buildable Windows 11 x64 IddCx driver and a
+deterministic software-device lifecycle controller. Its source/build validation
+is complete; trusted installation and physical extended-display validation are
+separate release gates.

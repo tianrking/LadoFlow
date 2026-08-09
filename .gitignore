@@ -40,3 +40,12 @@ Desktop.ini
 *.mobileprovision
 *.cer
 *.key
+
+# Windows indirect display driver toolchain and generated packages
+platform/windows/idd/.tools/
+platform/windows/idd/packages/
+platform/windows/idd/x64/
+platform/windows/idd/driver/x64/
+platform/windows/idd/controller/x64/
+platform/windows/idd/dist/
+platform/windows/idd/*.binlog

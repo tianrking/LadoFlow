@@ -44,35 +44,34 @@ flowchart TB
 
 ## Current implementation slice
 
-The first executable slice deliberately substitutes synthetic media and an
-in-memory data link for unfinished production capture and mobile presentation.
-The AOA USB control plane and persistent bulk-session boundary are now
-implemented separately, but the desktop runtime does not enqueue its media
-stream into that session yet:
+Loopback remains the cross-platform fallback, but Windows now has a real native
+media and input composition path:
 
 ```mermaid
 flowchart LR
-    UI["Tauri diagnostics UI"] --> IPC["Narrow Rust commands"]
-    IPC --> RT["Desktop loopback runtime"]
-    RT --> NEG["ladoflow-core\nnegotiation · session · telemetry"]
-    RT --> SYN["ladoflow-media\nsynthetic source · 30/60 Hz pacer"]
-    SYN --> PRO["ladoflow-protocol\ntyped VideoFrame · bounded framing"]
-    PRO --> MEM["ladoflow-transport\nbounded loopback · supersession"]
-    MEM --> RT
-    MAC["Target-gated macOS adapter\npermission · displays · native frame probe"] --> IPC
+    UI["Tauri host\ndisplay selection · diagnostics"] --> RT["Rust runtime\nsession · negotiation · telemetry"]
+    IDD["LadoFlow IddCx monitor\nbuild-verified, install proof pending"] -.->|virtual HMONITOR| WGC
+    MON["Selected physical HMONITOR"] --> WGC["Windows.Graphics.Capture\nfree-threaded D3D11 surfaces"]
+    WGC --> VP["D3D11 video processor\nBGRA → NV12"]
+    VP --> MF["Media Foundation\nhardware H.264 Main"]
+    MF --> PRO["LDFL protocol\nordered control + media"]
+    RT --> PRO
+    PRO --> AOA["libusb AOA bulk worker\nUSB IN/OUT"]
+    AOA --> INPUT["Capability-gated input"]
+    INPUT --> WIN["SendInput + touch injection\nselected-monitor coordinates"]
 ```
 
-This path exercises the shared contracts end to end without pretending to be a
-usable second display. Native frame sources will replace `SyntheticFrameProducer`.
-The verified AOA mode-switch and bounded bulk-transfer worker is already
-composed into the runtime for `Hello(0)`, `Capabilities(1)`, peer negotiation,
-and `DisplayConfig(2)`. Actual encoded media is not enqueued yet; neither USB
-nor a later LAN adapter should change session or wire semantics.
+The selected-display capture, GPU conversion, Intel Quick Sync encoding, wire
+composition, and native Windows input path have physical-host evidence. The
+IddCx project separately compiles one stable virtual monitor, passes Universal
+API and INF validation, generates a development catalog, and exposes a JSON
+start/status/stop controller. It has not yet been trusted and installed on this
+machine, so true extended-desktop behavior is not counted as physically proven.
 
-The USB control path enforces monotonically increasing sequence numbers per
-sender, uses an operating-system random session nonce, validates active
-Input/Telemetry/Ping/Pong/Error frames, and reports failures to the desktop UI.
-Synthetic proof bytes are never mislabeled as H.264 on the physical link.
+The USB path enforces monotonically increasing sequence numbers per sender,
+uses an operating-system random session nonce, validates active input,
+telemetry, ping/pong, and error frames, and reports failures to the desktop UI.
+The remaining proof boundary is a sustained physical Windows-to-Android run.
 
 The implementation lives in these ownership boundaries:
 
@@ -132,13 +131,19 @@ Every milestone must record at least:
 
 Use the supported Indirect Display Driver model where practical. The signed driver and privileged service remain native; the desktop UI does not run inside the driver process.
 
-The current adapter discovers monitors through Win32 and verifies selected-
-monitor capture with a hardware D3D11 device and a free-threaded
-`Windows.Graphics.Capture` frame pool. GPU surfaces stay native; only aggregate
-probe diagnostics cross into TypeScript. A second native probe verifies a real
-hardware Media Foundation NV12-to-H.264 bitstream and handles asynchronous
-output renegotiation. The long-running zero-copy connection between those two
-probes and the IddCx service/driver remain separate boundaries.
+The current adapter discovers monitors through Win32 and runs selected-monitor
+capture with a hardware D3D11 device and a free-threaded
+`Windows.Graphics.Capture` frame pool. It converts to NV12 on the GPU, feeds a
+low-latency Media Foundation hardware H.264 encoder, and sends real access
+units through the USB runtime. The native input sink maps pointer, keyboard,
+wheel, and touch events back to the selected monitor.
+
+`platform/windows/idd` now contains a separate UMDF 2 IddCx driver and
+software-device lifecycle controller. Its driver frame loop acknowledges DWM
+surfaces quickly; the desktop host captures the resulting virtual `HMONITOR`
+through the same verified WGC/encoder path. Source/build validation is complete;
+trusted installation, automatic host integration, signing, and physical
+extended-display evidence remain release gates.
 
 ### macOS
 

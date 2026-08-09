@@ -111,3 +111,27 @@ jobs:
           path: target/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
+
+  windows-idd:
+    name: Windows indirect display driver
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install NuGet CLI
+        uses: nuget/setup-nuget@v2
+        with:
+          nuget-version: '7.x'
+
+      - name: Build and validate development driver
+        shell: pwsh
+        run: .\platform\windows\idd\build.ps1
+
+      - name: Upload development driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ladoflow-windows-idd-x64-development-${{ github.sha }}
+          path: platform/windows/idd/dist/Release/x64/**
+          if-no-files-found: error
+          retention-days: 14

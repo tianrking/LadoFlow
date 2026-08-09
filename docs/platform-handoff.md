@@ -70,8 +70,10 @@ video processor, and gives that GPU texture to a low-latency Media Foundation
 hardware encoder through a shared DXGI device manager. It emits timestamped
 Annex B H.264 Main access units, including explicit IDR/clean-point evidence,
 into the ordered LDFL USB runtime. The real Windows screen-to-simulated-display
-protocol path has passed on physical Intel Quick Sync hardware. The IddCx
-service/driver and physical Android USB proof remain separate milestones.
+protocol path has passed on physical Intel Quick Sync hardware. A separate
+one-monitor UMDF 2 IddCx project and JSON lifecycle controller now build and
+pass Universal API/INF/catalog validation. Trusted installation and physical
+Android USB proof remain separate milestones.
 
 ### Phase A — capture/encode proof of concept
 
@@ -161,15 +163,18 @@ and `InjectTouchInput`.
 
 ### Phase B — real extended display
 
-Use the supported IddCx user-mode indirect-display model for the virtual monitor.
-The driver owns adapter/monitor modes and receives desktop images through its
-swapchain; this is a different boundary from capturing an existing display.
+The supported IddCx user-mode indirect-display model is now implemented under
+`platform/windows/idd`. The driver owns a stable one-monitor identity and its
+tablet-oriented mode table, then consumes DWM swap-chain surfaces on an MMCSS
+thread. The desktop process captures the exposed virtual `HMONITOR` through the
+existing WGC/GPU H.264 path; encoding and USB work do not run in the UMDF host.
 Follow Microsoft's [indirect display driver overview](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/indirect-display-driver-model-overview)
-and begin from the official driver sample rather than inventing an unsupported
-kernel path.
+and the official sample lineage recorded in the component's third-party notice.
 
-Keep the driver and any privileged companion service outside the Tauri process.
-Define a narrow, versioned local IPC contract for:
+The driver is outside the Tauri process. `LadoFlowVirtualDisplay.exe` owns the
+software-device handle and exposes machine-readable `start`, `status`, and
+`stop` results through a narrow JSON process boundary. The remaining host
+integration must cover:
 
 - connect/disconnect virtual monitor;
 - supported modes and active mode;
@@ -177,8 +182,9 @@ Define a narrow, versioned local IPC contract for:
 - health, backpressure, restart, and fatal-error events.
 
 Driver crashes, upgrades, rollback, and uninstall must not corrupt desktop-app
-state. Signing and installer work starts only after the unsigned development
-package has repeatable install/remove and recovery tests.
+state. The build produces a validated test-signed development catalog but does
+not alter certificate stores, Secure Boot, test-signing mode, or boot settings.
+Trusted install/remove and recovery evidence precede production signing.
 
 ## Commit and verification cadence
 

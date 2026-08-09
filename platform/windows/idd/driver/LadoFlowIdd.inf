@@ -1,0 +1,67 @@
+; LadoFlowIdd.inf
+; Development package for the LadoFlow indirect display adapter.
+
+[Version]
+PnpLockDown=1
+Signature="$Windows NT$"
+ClassGUID={4D36E968-E325-11CE-BFC1-08002BE10318}
+Class=Display
+ClassVer=2.0
+Provider=%ManufacturerName%
+CatalogFile=LadoFlowIdd.cat
+DriverVer=
+
+[Manufacturer]
+%ManufacturerName%=LadoFlow,NT$ARCH$.10.0...22000
+
+[LadoFlow.NT$ARCH$.10.0...22000]
+%DeviceName%=LadoFlowIdd_Install,Root\LadoFlowVirtualDisplay
+%DeviceName%=LadoFlowIdd_Install,LadoFlowVirtualDisplay
+
+[SourceDisksFiles]
+LadoFlowIdd.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[LadoFlowIdd_Install.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=LadoFlowDriverCopy
+
+[LadoFlowIdd_Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=LadoFlowHardwareSettings
+
+[LadoFlowHardwareSettings]
+HKR,,"UpperFilters",%REG_MULTI_SZ%,"IndirectKmd"
+HKR,"WUDF","DeviceGroupId",%REG_SZ%,"LadoFlow.VirtualDisplay.F94FE001-2137-4FD4-9A7E-0400C34EAE2B"
+
+[LadoFlowIdd_Install.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[LadoFlowIdd_Install.NT.Wdf]
+UmdfService=LadoFlowIdd,LadoFlowIdd_Service
+UmdfServiceOrder=LadoFlowIdd
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[LadoFlowIdd_Service]
+UmdfLibraryVersion=$UMDFVERSION$
+ServiceBinary=%12%\UMDF\LadoFlowIdd.dll
+UmdfExtensions=IddCx0102
+
+[DestinationDirs]
+LadoFlowDriverCopy=12,UMDF
+
+[LadoFlowDriverCopy]
+LadoFlowIdd.dll
+
+[Strings]
+ManufacturerName="LadoFlow Project"
+DiskName="LadoFlow Virtual Display Driver"
+DeviceName="LadoFlow Virtual Display Adapter"
+
+REG_MULTI_SZ=0x00010000
+REG_SZ=0x00000000

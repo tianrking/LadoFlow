@@ -60,10 +60,13 @@ path; it is not automatically a release claim.
 
 ## M5 — Windows virtual extended display
 
-- [ ] Supported IddCx indirect-display driver path
-- [ ] Resolution and rotation negotiation
-- [ ] Driver/service isolation and recovery
-- [ ] Signed development package
+- [x] Supported, build-verified one-monitor IddCx indirect-display driver path
+- [x] Stable monitor identity and tablet-oriented 60 Hz resolution table
+- [x] Out-of-process JSON start/status/stop lifecycle controller
+- [x] Universal API/INF validation and test-signed development catalog build
+- [ ] Runtime mode/rotation negotiation with the connected mobile display
+- [ ] Trusted install plus sleep/wake, crash, GPU-reset, and rollback recovery
+- [ ] Automatic Tauri lifecycle and virtual-monitor selection integration
 - [ ] Installer/uninstaller and rollback validation
 
 ## M6 — iOS/iPadOS display
