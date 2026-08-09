@@ -23,10 +23,11 @@ normal key-repeat behavior after receiving one press and one release. Android
 key codes without a USB HID keyboard-page mapping are ignored; text composition
 and IME strings require a later protocol version.
 
-The current negotiated input mask is `POINTER | TOUCH`. Keyboard mapping stays
-behind the capability gate and is not sent until host injection and physical
-Android keyboard behavior are validated. Focus follows the active pointer or
-touch session.
+The current Android input mask is `POINTER | TOUCH | KEYBOARD`. The session
+intersects it with the Host mask before sending each event. The decoder
+SurfaceView is focusable, requests focus on an active pointer/touch down, and
+forwards physical key down/up through `AndroidInputController.onKeyEvent`.
+Physical-device keyboard behavior remains an explicit validation item.
 
 The session controller queues protocol control (32), critical input (64), and
 coalescible input (32) before assigning the next sender sequence. Critical
@@ -52,8 +53,9 @@ is never serialized as an invented protocol extension.
 
 ## Evidence boundary
 
-Coordinate/contact/HID mapping is covered by local JVM tests, and the Android
-event adapter compiles against API 36. Physical multi-touch, mouse, keyboard,
-rotation, and remote host injection have not been exercised.
+Coordinate/contact/HID mapping and the negotiated keyboard send/drop paths are
+covered by local JVM tests. An Android instrumentation test dispatches key
+down/up through an actual SurfaceView listener. Physical multi-touch, mouse,
+keyboard, rotation, and remote host injection have not been exercised.
 
 **未实机验证 / Not verified on a physical Android device.**

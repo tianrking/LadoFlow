@@ -25,8 +25,9 @@ options, accounts, and a cloud relay are not part of the display path.
 - Asynchronous MediaCodec Surface decode boundary with Annex-B SPS/PPS parsing,
   keyframe gating, three-access-unit bounds, Surface recreation, and low-latency
   feature negotiation when the platform reports it.
-- Pointer/touch return through LDFL Input. Keyboard/HID mapping exists but stays
-  capability-gated and is not advertised in this milestone.
+- Pointer, touch, and physical-keyboard return through LDFL Input. The
+  focusable decoder SurfaceView forwards key down/up as USB HID usages, and the
+  session sends only input families advertised by both endpoints.
 - Telemetry reports the latest Host metadata frame ID released to Surface,
   session-cumulative drops, and the combined pre-Surface/decoder queue depth.
 
@@ -66,7 +67,7 @@ assembly tasks. A physical/emulated runtime can run the skeleton with
 `connectedDebugAndroidTest`.
 
 Automated tests and APK assembly do not prove USB permission behavior, AOA
-bulk transfer, MediaCodec output, touch return, or sustained operation on a
-phone/tablet.
+bulk transfer, MediaCodec output, physical pointer/touch/keyboard return, or
+sustained operation on a phone/tablet.
 
 **未实机验证 / Not verified on a physical Android device.**

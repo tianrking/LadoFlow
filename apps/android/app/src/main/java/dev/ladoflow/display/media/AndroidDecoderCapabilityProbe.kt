@@ -21,6 +21,9 @@ data class AndroidDisplayCapabilityEvidence(
     val probeHeight: Int,
 )
 
+internal val androidDisplayInputCapabilities: InputCapabilities =
+    InputCapabilities.Pointer or InputCapabilities.Touch or InputCapabilities.Keyboard
+
 /** Queries the actual display modes and H.264 Main decoder limits used for negotiation. */
 fun probeAndroidDisplayCapabilities(context: Context): AndroidDisplayCapabilityEvidence {
     val displayLimits = queryDisplayLimits(context)
@@ -57,7 +60,7 @@ fun probeAndroidDisplayCapabilities(context: Context): AndroidDisplayCapabilityE
             maxRefreshMillihz = selected.maximumRefreshMillihz,
             maxBitrateKbps = selected.maximumBitrateKbps,
             codecs = CodecCapabilities.H264,
-            input = InputCapabilities.Pointer or InputCapabilities.Touch,
+            input = androidDisplayInputCapabilities,
             features = FeatureFlags.DynamicRotation,
         ),
         decoderName = selected.decoderName,

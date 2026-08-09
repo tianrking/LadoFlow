@@ -817,7 +817,7 @@ private fun DiagnosticsScreen(
             )
             DiagnosticRow("Host", state.hostName ?: "Not connected")
             DiagnosticRow("Protocol", "LDFL v1 · frame and payload codec ready")
-            DiagnosticRow("Reverse input", "Pointer · touch")
+            DiagnosticRow("Reverse input", "Pointer · touch · keyboard")
         }
         SettingsCard(title = "Decoder") {
             DiagnosticRow("Negotiated codec", "H.264 Main")

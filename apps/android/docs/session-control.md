@@ -25,8 +25,9 @@ The capability probe enumerates actual `MediaCodecList.REGULAR_CODECS` AVC
 decoders, requires an advertised H.264 Main profile, intersects decoder size,
 frame-rate, and bitrate ranges with the physical display modes, and prefers a
 codec that Android reports as hardware accelerated. The current input mask is
-`POINTER | TOUCH`; keyboard mapping exists behind the input boundary but is not
-sent or advertised yet. The only feature flag is `DYNAMIC_ROTATION`.
+`POINTER | TOUCH | KEYBOARD`. Input is sent only when its family appears in
+both the Android and Host masks; an unnegotiated family is dropped locally.
+The only feature flag is `DYNAMIC_ROTATION`.
 
 ## Configuration and Surface gate
 
@@ -58,8 +59,8 @@ pending input or waiting for output release.
 
 Local JVM tests cover negotiation, exact reply identity and numbering,
 configuration and Surface gates, cross-family duplicate sequence rejection,
-priority-before-numbering, Ping/Pong/Input/Telemetry numbering, and failure
-paths. MediaCodec capability enumeration and actual Surface decode require an
-Android runtime.
+priority-before-numbering, negotiated keyboard Input numbering, rejection of
+an input family absent from the Host mask, and failure paths. MediaCodec
+capability enumeration and actual Surface decode require an Android runtime.
 
 **未实机验证 / Not verified on a physical Android device.**

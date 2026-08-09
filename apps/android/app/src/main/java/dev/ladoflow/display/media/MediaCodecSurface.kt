@@ -10,7 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.ladoflow.display.input.AndroidInputController
 
-/** Compose-owned SurfaceView that forwards only Surface lifecycle to [decoder]. */
+/** Compose-owned SurfaceView that forwards Surface lifecycle and input events. */
 @Composable
 fun MediaCodecSurface(
     decoder: VideoDecoder,
@@ -52,7 +52,7 @@ fun MediaCodecSurface(
     }
 }
 
-private fun DecoderSurfaceView.installInputController(controller: AndroidInputController?) {
+internal fun DecoderSurfaceView.installInputController(controller: AndroidInputController?) {
     isFocusable = controller != null
     isFocusableInTouchMode = controller != null
     setOnTouchListener(
@@ -82,7 +82,7 @@ private fun DecoderSurfaceView.installInputController(controller: AndroidInputCo
     }
 }
 
-private class DecoderSurfaceView(context: Context) : SurfaceView(context) {
+internal class DecoderSurfaceView(context: Context) : SurfaceView(context) {
     override fun performClick(): Boolean {
         super.performClick()
         return true

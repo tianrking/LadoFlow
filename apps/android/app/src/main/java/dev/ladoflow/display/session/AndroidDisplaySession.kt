@@ -487,7 +487,12 @@ class AndroidDisplaySession(
         ) {
             return
         }
-        if (!emission.payload.isSupportedBy(localCapabilities.input)) {
+        val negotiatedInputCapabilities = remoteCapabilities?.input?.let { hostInput ->
+            InputCapabilities.fromBits(localCapabilities.input.bits and hostInput.bits)
+        }
+        if (negotiatedInputCapabilities == null ||
+            !emission.payload.isSupportedBy(negotiatedInputCapabilities)
+        ) {
             recordDroppedInput()
             return
         }

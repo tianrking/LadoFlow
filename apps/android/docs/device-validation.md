@@ -75,9 +75,11 @@ or below 64 KiB.
    with the Android session counter and `queue_depth` with the pre-Surface plus
    MediaCodec queues. Do not infer Presented from send count or claim physical
    panel presentation from a Surface release alone.
-9. Exercise touch begin/move/end/cancel, mouse move/buttons/wheel, focus loss,
-   rotation/resolution reconfiguration, explicit disconnect, cable detach,
-   foreground/background, and reconnect.
+9. Exercise touch begin/move/end/cancel, mouse move/buttons/wheel, physical
+   keyboard down/up with modifiers, focus loss, rotation/resolution
+   reconfiguration, explicit disconnect, cable detach, foreground/background,
+   and reconnect. Confirm the Host advertises each input family before Android
+   sends it and releases tracked input state after focus loss or disconnect.
 10. Run at least 30 minutes at the negotiated 60 Hz or downgraded 30 Hz. Record
     frame count, drops, maximum queue depth, decoder failures, reconnects,
     thermal state, and any visible corruption or latency observation.

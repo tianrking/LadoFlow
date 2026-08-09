@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.ladoflow.display.media.probeAndroidDisplayCapabilities
 import dev.ladoflow.display.protocol.CodecCapabilities
+import dev.ladoflow.display.protocol.InputCapabilities
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -36,6 +37,7 @@ class AndroidRuntimeContractTest {
         result.onSuccess { evidence ->
             assertTrue(evidence.decoderName.isNotBlank())
             assertTrue(evidence.capabilities.codecs.contains(CodecCapabilities.H264))
+            assertTrue(evidence.capabilities.input.contains(InputCapabilities.Keyboard))
             assertTrue(evidence.capabilities.maxRefreshMillihz >= 30_000u)
         }.onFailure { failure ->
             assertTrue(failure.message?.isNotBlank() == true)

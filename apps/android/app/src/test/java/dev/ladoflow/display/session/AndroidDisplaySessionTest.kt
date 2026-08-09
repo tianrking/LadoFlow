@@ -17,6 +17,8 @@ import dev.ladoflow.display.protocol.FrameFlags
 import dev.ladoflow.display.protocol.HelloPayload
 import dev.ladoflow.display.protocol.InputCapabilities
 import dev.ladoflow.display.protocol.InputPayload
+import dev.ladoflow.display.protocol.KeyInput
+import dev.ladoflow.display.protocol.KeyModifiers
 import dev.ladoflow.display.protocol.LdflFrame
 import dev.ladoflow.display.protocol.MessageType
 import dev.ladoflow.display.protocol.PingPayload
@@ -69,6 +71,7 @@ class AndroidDisplaySessionTest {
         assertTrue(hello.nonce.contentEquals(ByteArray(16) { 0x44 }))
         assertEquals(1uL, capabilitiesFrame.sequence)
         assertEquals(harness.localCapabilities, capabilitiesFrame.decodePayload())
+        assertTrue(harness.localCapabilities.input.contains(InputCapabilities.Keyboard))
     }
 
     @Test
@@ -161,6 +164,55 @@ class AndroidDisplaySessionTest {
         assertEquals(MessageType.Pong, pongFrame.messageType)
         assertEquals(MessageType.Input, inputFrame.messageType)
         assertTrue(telemetryFrame.decodePayload() is TelemetryPayload)
+    }
+
+    @Test
+    fun sendsKeyboardInputWhenBothEndpointsAdvertiseIt() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
+        val keyPayload = InputPayload(
+            timestampMicros = 20_000u,
+            event = KeyInput(
+                usage = 0x04,
+                state = ButtonState.Pressed,
+                modifiers = KeyModifiers.Shift or KeyModifiers.Control,
+            ),
+        )
+
+        harness.session.submitInputPayload(keyPayload, InputDelivery.Critical)
+        val inputFrame = harness.transport.nextSent()
+
+        assertEquals(2uL, inputFrame.sequence)
+        assertEquals(MessageType.Input, inputFrame.messageType)
+        assertEquals(keyPayload, inputFrame.decodePayload())
+    }
+
+    @Test
+    fun dropsKeyboardInputWhenHostDidNotAdvertiseIt() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate(
+            hostInput = InputCapabilities.Pointer or InputCapabilities.Touch,
+        )
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
+        val sentBeforeInput = harness.transport.sent.size
+
+        harness.session.submitInputPayload(
+            InputPayload(
+                timestampMicros = 20_000u,
+                event = KeyInput(0x04, ButtonState.Pressed, KeyModifiers.None),
+            ),
+            InputDelivery.Critical,
+        )
+
+        eventually { harness.session.metrics.value.droppedInputEvents == 1L }
+        assertEquals(sentBeforeInput, harness.transport.sent.size)
     }
 
     @Test
@@ -274,12 +326,14 @@ class AndroidDisplaySessionTest {
             transport.mutableState.value = UsbTransportState.Connected(accessoryIdentity())
         }
 
-        suspend fun connectAndNegotiate() {
+        suspend fun connectAndNegotiate(
+            hostInput: InputCapabilities = TEST_INPUT_CAPABILITIES,
+        ) {
             connect()
             transport.nextSent()
             transport.nextSent()
             transport.framesMutable.emit(hostHelloFrame())
-            transport.framesMutable.emit(hostCapabilitiesFrame())
+            transport.framesMutable.emit(hostCapabilitiesFrame(input = hostInput))
             eventually { session.state.value is AndroidDisplaySessionState.Ready }
         }
     }
@@ -344,13 +398,14 @@ class AndroidDisplaySessionTest {
         private fun capabilities(
             width: Int,
             height: Int,
+            input: InputCapabilities = TEST_INPUT_CAPABILITIES,
         ) = CapabilitiesPayload(
             maxWidth = width,
             maxHeight = height,
             maxRefreshMillihz = 60_000u,
             maxBitrateKbps = 20_000u,
             codecs = CodecCapabilities.H264,
-            input = InputCapabilities.Pointer or InputCapabilities.Touch,
+            input = input,
             features = FeatureFlags.DynamicRotation,
         )
 
@@ -360,10 +415,13 @@ class AndroidDisplaySessionTest {
             HelloPayload(1, 1, EndpointRole.Host, ByteArray(16) { 0x11 }, "Windows Host"),
         )
 
-        private fun hostCapabilitiesFrame(sequence: ULong = 1u) = LdflFrame.fromPayload(
+        private fun hostCapabilitiesFrame(
+            sequence: ULong = 1u,
+            input: InputCapabilities = TEST_INPUT_CAPABILITIES,
+        ) = LdflFrame.fromPayload(
             FrameFlags.None,
             sequence,
-            capabilities(3_840, 2_160),
+            capabilities(3_840, 2_160, input),
         )
 
         private fun displayConfig() = DisplayConfigPayload(
@@ -404,3 +462,6 @@ class AndroidDisplaySessionTest {
         }
     }
 }
+
+private val TEST_INPUT_CAPABILITIES =
+    InputCapabilities.Pointer or InputCapabilities.Touch or InputCapabilities.Keyboard
