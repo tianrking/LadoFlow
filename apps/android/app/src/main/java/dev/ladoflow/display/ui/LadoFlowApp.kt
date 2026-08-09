@@ -715,15 +715,15 @@ private fun DiagnosticsScreen(state: DisplayUiState) {
         }
         SettingsCard(title = "Decoder") {
             DiagnosticRow("Primary codec", "H.264 / AVC")
-            DiagnosticRow("Backend", "Android MediaCodec boundary pending")
+            DiagnosticRow("Backend", "MediaCodec Surface boundary ready · not device-verified")
             DiagnosticRow("Rendered frames", state.metrics.renderedFrames.toString())
             DiagnosticRow("Dropped frames", state.metrics.droppedFrames.toString())
         }
         SettingsCard(title = "Build boundary") {
             Text(
                 "This build includes the Compose UI, bounded LDFL v1 codec, and Android USB Accessory " +
-                    "lifecycle/I/O boundary. USB hardware behavior is not device-verified; MediaCodec " +
-                    "decode remains a separate implementation boundary.",
+                    "lifecycle/I/O boundary. The H.264 MediaCodec boundary validates Annex-B and waits " +
+                    "for SPS/PPS plus an LDFL keyframe. USB and decode remain unverified on a device.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )

@@ -15,6 +15,13 @@ coroutine reader/writer loops, separates control/media backpressure, and uses a
 bounded reconnect policy. See [USB accessory handoff](./docs/usb-accessory.md)
 for the exact PC-host identity and transfer contract.
 
+The H.264 layer validates Annex-B access units, captures SPS/PPS, waits for the
+LDFL `KEYFRAME` after every broken chain, prefers a platform-reported hardware
+AVC decoder, conditionally enables Android's low-latency feature, and releases
+decoded output to a lifecycle-owned `Surface`. See
+[MediaCodec boundary](./docs/media-codec.md) for the exact stream contract and
+evidence boundary.
+
 ## Local build
 
 Requirements:
@@ -32,8 +39,9 @@ $env:ANDROID_SDK_ROOT = "<path-to-android-sdk>"
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/`. USB transport is
-wired to the application lifecycle but remains explicitly unverified on real
-hardware. Hardware decode remains inactive until its own verified slice lands.
+wired to the application lifecycle. MediaCodec is implemented as a standalone
+decoder boundary ready for the negotiated display-session coordinator; neither
+path has physical-device evidence yet.
 
 Automated build and stream-level tests do not prove phone/tablet USB behavior.
 **未实机验证 / Not verified on a physical Android device.**
