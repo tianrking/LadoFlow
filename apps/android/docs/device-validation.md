@@ -34,11 +34,15 @@ The non-hardware instrumentation skeleton can be run with:
 
 ## Required host baseline
 
-Use a PC build containing at least the Windows host work through `3984efd`,
-including global USB wire ordering (`d7cd44c`), H.264 Main configuration and
-timestamped access-unit preservation (`cbdadbe`), and persistent test-pattern
-VideoFrame transmission (`5116af5` and `3984efd`). Record the exact host SHA;
-do not rely on a branch name alone.
+Use a PC build at or after `6fbfddf` (`Stream Windows capture through GPU
+H264`). This supersedes the earlier synthetic test-pattern baseline: the Host
+now runs cancellable Windows.Graphics.Capture, converts BGRA to NV12 with the
+VideoProcessor on the same D3D11 device without CPU readback, encodes
+low-latency H.264 Main with B-frames disabled, and sends each access unit as an
+LDFL VideoFrame. Record the exact Host SHA; do not rely on a branch name alone.
+
+No protocol field was added for this capture path. The current Host sets every
+`VideoFrame.metadata.frame_id` to that frame's global LDFL header `sequence`.
 
 The host must enter AOA with manufacturer `LadoFlow`, model `LadoFlow Host`, and
 then carry raw LDFL v1 bytes with no USB-private header. Host writes remain at
@@ -58,16 +62,19 @@ or below 64 KiB.
 5. Confirm Host sequence `0/1/2` negotiates H.264 Main within the Android
    advertised size/rate/bitrate. The app must fail closed on a deliberately
    duplicated sequence and on VideoFrame before DisplayConfig.
-6. Display the PC test pattern at every resolution the Android capability permits.
-   Do not force the PC encoder's full 1280x800/1920x1080/2560x1440/2732x2048
-   matrix above the device's advertised maximum.
+6. Display live Windows capture at every resolution the Android capability
+   permits. Do not force the PC encoder's full
+   1280x800/1920x1080/2560x1440/2732x2048 matrix above the device's advertised
+   maximum.
 7. Verify SPS/PPS plus the LDFL `KEYFRAME` starts decode, P-frame access-unit
    boundaries are retained, and Surface loss/recreation waits for a fresh
    keyframe.
-8. Compare Android Telemetry `frame_id` with the latest Host
-   `VideoFrame.metadata.frame_id` actually released to Surface. Compare
-   `dropped_frames` with the Android session counter and `queue_depth` with the
-   pre-Surface plus MediaCodec queues. Do not infer Presented from send count.
+8. Confirm each Host `VideoFrame.metadata.frame_id` equals its global LDFL
+   header `sequence`. Compare Android Telemetry `frame_id` with the latest Host
+   frame ID actually released by MediaCodec to Surface. Compare `dropped_frames`
+   with the Android session counter and `queue_depth` with the pre-Surface plus
+   MediaCodec queues. Do not infer Presented from send count or claim physical
+   panel presentation from a Surface release alone.
 9. Exercise touch begin/move/end/cancel, mouse move/buttons/wheel, focus loss,
    rotation/resolution reconfiguration, explicit disconnect, cable detach,
    foreground/background, and reconnect.
