@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     num::NonZeroUsize,
     sync::{
         Arc, Mutex, MutexGuard,
@@ -29,7 +29,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::host_protocol::{HostProtocolConfig, negotiate_host_transport, send_control_payload};
 use crate::platform::{
-    PlatformStatus, UsbAccessoryManager, UsbAccessoryProbeReport, collect_status,
+    H264AccessUnit, H264StreamConfig, PlatformStatus, SyntheticH264Stream, UsbAccessoryManager,
+    UsbAccessoryProbeReport, collect_status,
 };
 
 const LATENCY_WINDOW: NonZeroUsize = NonZeroUsize::new(240).expect("240 is non-zero");
@@ -37,6 +38,7 @@ const MEDIA_STREAM_KEY: SupersessionKey = SupersessionKey::new(1);
 const USB_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
 const USB_CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const USB_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const SENT_VIDEO_HISTORY: usize = 1_024;
 const LOOPBACK_TRANSPORT_NAME: &str = "In-memory duplex";
 const USB_TRANSPORT_NAME: &str = "Android Open Accessory USB";
 
@@ -124,6 +126,7 @@ struct SharedState {
     frames_dropped: u64,
     frames_superseded: u64,
     queue_depth: usize,
+    sent_video_ordinals: VecDeque<(u64, u64)>,
 }
 
 impl SharedState {
@@ -142,6 +145,7 @@ impl SharedState {
             frames_dropped: 0,
             frames_superseded: 0,
             queue_depth: 0,
+            sent_video_ordinals: VecDeque::with_capacity(SENT_VIDEO_HISTORY),
         }
     }
 
@@ -159,6 +163,7 @@ impl SharedState {
         self.frames_dropped = 0;
         self.frames_superseded = 0;
         self.queue_depth = 0;
+        self.sent_video_ordinals.clear();
     }
 
     fn reset_for_usb_negotiation(&mut self, config: LoopbackConfig) {
@@ -175,6 +180,7 @@ impl SharedState {
         self.frames_dropped = 0;
         self.frames_superseded = 0;
         self.queue_depth = 0;
+        self.sent_video_ordinals.clear();
     }
 
     fn establish_usb_control(
@@ -261,7 +267,9 @@ impl DesktopRuntime {
             shared.transport == USB_TRANSPORT_NAME
                 && matches!(
                     shared.phase,
-                    SessionPhaseView::Negotiating | SessionPhaseView::Connected
+                    SessionPhaseView::Negotiating
+                        | SessionPhaseView::Connected
+                        | SessionPhaseView::Streaming
                 )
         };
         if usb_session_active {
@@ -429,7 +437,19 @@ fn run_usb_control_session_inner(
     }
 
     let clock_origin = Instant::now();
+    let stream_config = H264StreamConfig::new(
+        negotiated_config.width,
+        negotiated_config.height,
+        negotiated_config.fps,
+        established.display_config.bitrate_kbps(),
+    )?;
+    let video_stream = SyntheticH264Stream::start(stream_config)?;
+    let mut access_units = VecDeque::<H264AccessUnit>::new();
+    let mut media_clock_offset = None::<Duration>;
+    let mut encoder_name = None::<String>;
+
     while !cancel.load(Ordering::Acquire) {
+        let mut made_progress = false;
         if transport.connection_state() != ConnectionState::Connected {
             return Err("Android USB disconnected during the LDFL session".to_owned());
         }
@@ -440,21 +460,129 @@ fn run_usb_control_session_inner(
         {
             return Err("Android display sent an unexpected media frame to the host".to_owned());
         }
-        let Some(packet) = transport
+        if let Some(packet) = transport
             .try_receive(Channel::Control)
             .map_err(|error| format!("Android USB control receive failed: {error}"))?
-        else {
+        {
+            handle_usb_control(
+                shared,
+                cancel,
+                transport,
+                packet,
+                clock_origin,
+                &mut next_sequence,
+            )?;
+            made_progress = true;
+        }
+
+        if access_units.is_empty()
+            && let Some(batch) = video_stream.try_next_batch()?
+        {
+            if encoder_name
+                .as_ref()
+                .is_some_and(|name| name != &batch.encoder_name)
+            {
+                return Err(format!(
+                    "Windows H.264 encoder changed from {} to {} during one session",
+                    encoder_name.as_deref().unwrap_or("unknown"),
+                    batch.encoder_name
+                ));
+            }
+            encoder_name.get_or_insert(batch.encoder_name);
+            access_units.extend(batch.access_units);
+            align_media_clock(
+                &access_units,
+                clock_origin.elapsed(),
+                &mut media_clock_offset,
+            )?;
+            made_progress = true;
+        }
+
+        if let (Some(unit), Some(offset)) = (access_units.front(), media_clock_offset) {
+            let due = offset
+                .checked_add(unit.timestamp)
+                .ok_or_else(|| "H.264 media clock overflowed".to_owned())?;
+            if clock_origin.elapsed() >= due {
+                let unit = access_units
+                    .pop_front()
+                    .ok_or_else(|| "H.264 access-unit queue changed unexpectedly".to_owned())?;
+                send_usb_h264_access_unit(shared, transport, unit, offset, &mut next_sequence)?;
+                made_progress = true;
+            }
+        }
+
+        if !made_progress {
             thread::sleep(USB_CONTROL_POLL_INTERVAL);
-            continue;
-        };
-        handle_usb_control(
-            shared,
-            cancel,
-            transport,
-            packet,
-            clock_origin,
-            &mut next_sequence,
-        )?;
+        }
+    }
+    Ok(())
+}
+
+fn align_media_clock(
+    access_units: &VecDeque<H264AccessUnit>,
+    now: Duration,
+    offset: &mut Option<Duration>,
+) -> Result<(), String> {
+    let first = access_units
+        .front()
+        .ok_or_else(|| "Windows H.264 batch is unexpectedly empty".to_owned())?;
+    let current_offset = offset.get_or_insert_with(|| now.saturating_sub(first.timestamp));
+    let scheduled = current_offset
+        .checked_add(first.timestamp)
+        .ok_or_else(|| "H.264 media clock overflowed".to_owned())?;
+    let late_threshold = first
+        .duration
+        .checked_mul(2)
+        .ok_or_else(|| "H.264 frame duration overflowed".to_owned())?;
+    if first.keyframe && now.saturating_sub(scheduled) > late_threshold {
+        *current_offset = now.saturating_sub(first.timestamp);
+    }
+    Ok(())
+}
+
+fn send_usb_h264_access_unit(
+    shared: &Arc<Mutex<SharedState>>,
+    transport: &mut impl PacketTransport,
+    unit: H264AccessUnit,
+    media_clock_offset: Duration,
+    next_sequence: &mut u64,
+) -> Result<(), String> {
+    let sequence = *next_sequence;
+    let capture_time = media_clock_offset
+        .checked_add(unit.timestamp)
+        .ok_or_else(|| "H.264 capture timestamp overflowed".to_owned())?;
+    let presentation_time = capture_time
+        .checked_add(unit.duration)
+        .ok_or_else(|| "H.264 presentation timestamp overflowed".to_owned())?;
+    let metadata = VideoFrameMetadata::new(
+        sequence,
+        duration_micros_u64(capture_time),
+        duration_micros_u64(presentation_time),
+        duration_micros_u32(unit.duration)?,
+    )
+    .map_err(|error| error.to_string())?;
+    let payload = VideoFrame::new(metadata, unit.bytes).map_err(|error| error.to_string())?;
+    let flags = if unit.keyframe {
+        FrameFlags::KEYFRAME
+    } else {
+        FrameFlags::NONE
+    };
+    let frame =
+        WireFrame::from_payload(flags, sequence, &payload).map_err(|error| error.to_string())?;
+    transport
+        .try_send(Packet::media(frame.encode()))
+        .map_err(|error| format!("Android USB media queue rejected H.264: {error}"))?;
+    *next_sequence = next_sequence
+        .checked_add(1)
+        .ok_or_else(|| "host LDFL sequence is exhausted".to_owned())?;
+
+    let mut state = lock_arc(shared);
+    state.phase = SessionPhaseView::Streaming;
+    state.frames_produced = state.frames_produced.saturating_add(1);
+    let ordinal = state.frames_produced;
+    state.sent_video_ordinals.push_back((sequence, ordinal));
+    while state.sent_video_ordinals.len() > SENT_VIDEO_HISTORY {
+        state.sent_video_ordinals.pop_front();
     }
     Ok(())
 }
@@ -532,8 +660,7 @@ fn handle_usb_control(
                 .decode_payload::<Telemetry>()
                 .map_err(|error| error.to_string())?;
             let mut state = lock_arc(shared);
-            state.frames_dropped = u64::from(telemetry.dropped_frames());
-            state.queue_depth = usize::from(telemetry.queue_depth());
+            apply_usb_telemetry(&mut state, telemetry)?;
         }
         MessageType::Error => {
             let error = frame
@@ -550,6 +677,37 @@ fn handle_usb_control(
                 "Android sent unexpected {kind:?} after LDFL negotiation"
             ));
         }
+    }
+    Ok(())
+}
+
+fn apply_usb_telemetry(state: &mut SharedState, telemetry: Telemetry) -> Result<(), String> {
+    state.frames_dropped = u64::from(telemetry.dropped_frames());
+    state.queue_depth = usize::from(telemetry.queue_depth());
+    let presented_ordinal = (telemetry.frame_id() != 0)
+        .then(|| {
+            state
+                .sent_video_ordinals
+                .iter()
+                .rev()
+                .find(|(sequence, _ordinal)| *sequence == telemetry.frame_id())
+                .map(|(_sequence, ordinal)| *ordinal)
+        })
+        .flatten();
+    if let Some(ordinal) = presented_ordinal {
+        state.frames_presented = ordinal.saturating_sub(state.frames_dropped);
+    }
+    let timings = telemetry.timings();
+    let total_latency_micros = u64::from(timings.capture_micros())
+        .saturating_add(u64::from(timings.encode_micros()))
+        .saturating_add(u64::from(timings.transport_micros()))
+        .saturating_add(u64::from(timings.decode_micros()))
+        .saturating_add(u64::from(timings.presentation_micros()));
+    if total_latency_micros > 0 {
+        state
+            .latency
+            .record(Duration::from_micros(total_latency_micros))
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -795,19 +953,24 @@ fn duration_micros_u32(duration: Duration) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::VecDeque,
         sync::{Arc, Mutex, atomic::AtomicBool},
         thread,
         time::{Duration, Instant},
     };
 
-    use ladoflow_protocol::{DecodeOutcome, Frame as WireFrame, FrameFlags, Ping, Pong};
+    use ladoflow_protocol::{
+        DecodeOutcome, Frame as WireFrame, FrameFlags, Ping, Pong, StageTimings, Telemetry,
+        ThermalState, VideoFrame,
+    };
     use ladoflow_transport::{
         Channel, LoopbackConfig as TransportConfig, Packet, PacketTransport, loopback_pair,
     };
 
     use super::{
-        DesktopRuntime, LoopbackConfig, SessionPhaseView, SharedState, handle_usb_control,
-        negotiated_session,
+        DesktopRuntime, H264AccessUnit, LoopbackConfig, SessionPhaseView, SharedState,
+        align_media_clock, apply_usb_telemetry, handle_usb_control, negotiated_session,
+        send_usb_h264_access_unit,
     };
 
     #[test]
@@ -828,6 +991,90 @@ mod tests {
 
         let stopped = runtime.stop().expect("stop loopback");
         assert!(matches!(stopped.session.phase, SessionPhaseView::Stopped));
+    }
+
+    #[test]
+    fn h264_media_clock_realigns_only_on_a_late_keyframe() {
+        let mut units = VecDeque::from([H264AccessUnit {
+            bytes: vec![0, 0, 0, 1, 0x65],
+            timestamp: Duration::ZERO,
+            duration: Duration::from_millis(16),
+            keyframe: true,
+        }]);
+        let mut offset = None;
+        align_media_clock(&units, Duration::from_millis(500), &mut offset)
+            .expect("initial media clock");
+        assert_eq!(offset, Some(Duration::from_millis(500)));
+
+        units.front_mut().expect("one unit").timestamp = Duration::from_secs(1);
+        align_media_clock(&units, Duration::from_secs(2), &mut offset)
+            .expect("late keyframe realigns");
+        assert_eq!(offset, Some(Duration::from_secs(1)));
+
+        units.front_mut().expect("one unit").timestamp = Duration::from_secs(3);
+        units.front_mut().expect("one unit").keyframe = false;
+        align_media_clock(&units, Duration::from_secs(5), &mut offset)
+            .expect("late inter frame does not move the clock");
+        assert_eq!(offset, Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn usb_h264_access_unit_is_framed_without_supersession() {
+        let (mut host, mut display) = loopback_pair(TransportConfig::default());
+        let shared = Arc::new(Mutex::new(SharedState::new()));
+        let mut next_sequence = 3;
+        send_usb_h264_access_unit(
+            &shared,
+            &mut host,
+            H264AccessUnit {
+                bytes: vec![0, 0, 0, 1, 0x65, 1, 2, 3],
+                timestamp: Duration::from_millis(2),
+                duration: Duration::from_millis(16),
+                keyframe: true,
+            },
+            Duration::from_millis(100),
+            &mut next_sequence,
+        )
+        .expect("H.264 frame is queued");
+
+        let packet = display
+            .try_receive(Channel::Media)
+            .expect("media queue remains connected")
+            .expect("one H.264 packet");
+        assert_eq!(packet.supersession_key(), None);
+        let DecodeOutcome::Complete { frame, consumed } =
+            WireFrame::decode_prefix(packet.payload()).expect("valid LDFL frame")
+        else {
+            panic!("complete H.264 frame expected");
+        };
+        assert_eq!(consumed, packet.len());
+        assert_eq!(frame.header().sequence(), 3);
+        assert!(frame.header().flags().contains(FrameFlags::KEYFRAME));
+        let video = frame
+            .decode_payload::<VideoFrame>()
+            .expect("valid VideoFrame payload");
+        assert_eq!(video.metadata().frame_id(), 3);
+        assert_eq!(video.metadata().capture_timestamp_micros(), 102_000);
+        assert_eq!(video.metadata().presentation_timestamp_micros(), 118_000);
+        assert_eq!(next_sequence, 4);
+        let mut state = shared.lock().expect("shared state");
+        assert!(matches!(state.phase, SessionPhaseView::Streaming));
+        assert_eq!(state.frames_produced, 1);
+        assert_eq!(state.sent_video_ordinals.back(), Some(&(3, 1)));
+        let telemetry = Telemetry::new(
+            200_000,
+            3,
+            StageTimings::new(100, 200, 300, 400, 500).expect("valid timings"),
+            0,
+            0,
+            0,
+            0,
+            ThermalState::Nominal,
+        )
+        .expect("valid telemetry");
+        apply_usb_telemetry(&mut state, telemetry).expect("telemetry is applied");
+        assert_eq!(state.frames_presented, 1);
+        assert!(state.latency.snapshot().is_some());
     }
 
     #[test]

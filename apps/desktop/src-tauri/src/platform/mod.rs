@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::time::Duration;
 
 #[cfg(not(target_os = "windows"))]
 use ladoflow_transport::{
@@ -114,13 +115,76 @@ pub struct CaptureProbeReport {
     pub passed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct H264StreamConfig {
+    pub width: u16,
+    pub height: u16,
+    pub fps: u16,
+    pub bitrate_kbps: u32,
+}
+
+impl H264StreamConfig {
+    pub fn new(width: u16, height: u16, fps: u16, bitrate_kbps: u32) -> Result<Self, String> {
+        if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
+            return Err("H.264 dimensions must be non-zero and even".to_owned());
+        }
+        if !matches!(fps, 30 | 60) {
+            return Err("H.264 stream frame rate must be 30 or 60 Hz".to_owned());
+        }
+        if bitrate_kbps == 0 {
+            return Err("H.264 stream bitrate must be non-zero".to_owned());
+        }
+        Ok(Self {
+            width,
+            height,
+            fps,
+            bitrate_kbps,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct H264AccessUnit {
+    pub bytes: Vec<u8>,
+    pub timestamp: Duration,
+    pub duration: Duration,
+    pub keyframe: bool,
+}
+
+#[derive(Debug)]
+pub struct H264StreamBatch {
+    pub encoder_name: String,
+    pub access_units: Vec<H264AccessUnit>,
+}
+
 #[cfg(target_os = "macos")]
 pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    UsbAccessoryManager, collect_status, probe_screen_capture, request_capture_access,
+    SyntheticH264Stream, UsbAccessoryManager, collect_status, probe_screen_capture,
+    request_capture_access,
 };
+
+#[cfg(not(target_os = "windows"))]
+pub struct SyntheticH264Stream;
+
+#[cfg(not(target_os = "windows"))]
+impl SyntheticH264Stream {
+    pub fn start(_config: H264StreamConfig) -> Result<Self, String> {
+        Err(format!(
+            "synthetic hardware H.264 streaming is not implemented for {}",
+            std::env::consts::OS
+        ))
+    }
+
+    pub fn try_next_batch(&self) -> Result<Option<H264StreamBatch>, String> {
+        Err(format!(
+            "synthetic hardware H.264 streaming is not implemented for {}",
+            std::env::consts::OS
+        ))
+    }
+}
 
 #[cfg(not(target_os = "windows"))]
 #[derive(Debug, Clone, Default)]

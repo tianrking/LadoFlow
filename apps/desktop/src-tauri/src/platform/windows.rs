@@ -12,9 +12,10 @@ use std::{
     mem::size_of,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
-        mpsc::{SyncSender, sync_channel},
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -47,7 +48,10 @@ use ::windows::{
     core::{BOOL, IInspectable, Interface, factory},
 };
 
-use super::{CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus, UsbLinkState};
+use super::{
+    CapturePermission, CaptureProbeReport, DisplaySource, H264AccessUnit, H264StreamBatch,
+    H264StreamConfig, PlatformStatus, UsbLinkState,
+};
 
 mod media_foundation;
 mod usb_accessory;
@@ -121,6 +125,177 @@ struct EncoderDiagnostics {
 
 struct CaptureWorker {
     commands: SyncSender<CaptureCommand>,
+}
+
+pub struct SyntheticH264Stream {
+    cancel: Arc<AtomicBool>,
+    receiver: Receiver<Result<H264StreamBatch, String>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl SyntheticH264Stream {
+    pub fn start(config: H264StreamConfig) -> Result<Self, String> {
+        let config =
+            H264StreamConfig::new(config.width, config.height, config.fps, config.bitrate_kbps)?;
+        let encoder_config = media_foundation::H264EncoderConfig::new(
+            u32::from(config.width),
+            u32::from(config.height),
+            u32::from(config.fps),
+            config
+                .bitrate_kbps
+                .checked_mul(1_000)
+                .ok_or_else(|| "H.264 bitrate exceeds the Windows encoder range".to_owned())?,
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let (sender, receiver) = sync_channel(2);
+        let handle = thread::Builder::new()
+            .name("ladoflow-windows-h264".to_owned())
+            .spawn(move || {
+                if let Err(error) =
+                    run_synthetic_h264_stream(encoder_config, &worker_cancel, &sender)
+                {
+                    let _sent = send_encoder_result(&sender, Err(error), &worker_cancel);
+                }
+            })
+            .map_err(|error| format!("failed to start Windows H.264 worker: {error}"))?;
+        Ok(Self {
+            cancel,
+            receiver,
+            handle: Some(handle),
+        })
+    }
+
+    pub fn try_next_batch(&self) -> Result<Option<H264StreamBatch>, String> {
+        match self.receiver.try_recv() {
+            Ok(Ok(batch)) => Ok(Some(batch)),
+            Ok(Err(error)) => Err(error),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) if self.cancel.load(Ordering::Acquire) => Ok(None),
+            Err(TryRecvError::Disconnected) => {
+                Err("Windows H.264 worker stopped without a diagnostic".to_owned())
+            }
+        }
+    }
+}
+
+impl Drop for SyntheticH264Stream {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _result = handle.join();
+        }
+    }
+}
+
+fn run_synthetic_h264_stream(
+    config: media_foundation::H264EncoderConfig,
+    cancel: &AtomicBool,
+    sender: &SyncSender<Result<H264StreamBatch, String>>,
+) -> Result<(), String> {
+    let _apartment = WinRtApartment::initialize()?;
+    let _media_foundation = MediaFoundationRuntime::startup()?;
+    let frame_count = config.fps;
+    let mut start_frame_index = 0_u32;
+
+    while !cancel.load(Ordering::Acquire) {
+        let batch =
+            MediaFoundationRuntime::encode_synthetic_h264(config, start_frame_index, frame_count)?;
+        let submitted = batch.frames_submitted;
+        let batch = convert_h264_batch(batch)?;
+        if !send_encoder_result(sender, Ok(batch), cancel) {
+            break;
+        }
+        start_frame_index = start_frame_index
+            .checked_add(submitted)
+            .ok_or_else(|| "synthetic H.264 stream frame index is exhausted".to_owned())?;
+    }
+    Ok(())
+}
+
+fn send_encoder_result(
+    sender: &SyncSender<Result<H264StreamBatch, String>>,
+    mut result: Result<H264StreamBatch, String>,
+    cancel: &AtomicBool,
+) -> bool {
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return false;
+        }
+        match sender.try_send(result) {
+            Ok(()) => return true,
+            Err(TrySendError::Full(returned)) => {
+                result = returned;
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(TrySendError::Disconnected(_returned)) => return false,
+        }
+    }
+}
+
+fn convert_h264_batch(batch: media_foundation::H264EncodeBatch) -> Result<H264StreamBatch, String> {
+    if batch.access_units.is_empty() {
+        return Err("Windows H.264 encoder returned an empty access-unit batch".to_owned());
+    }
+    if !batch.access_units.first().is_some_and(|unit| unit.keyframe) {
+        return Err("Windows H.264 batch does not begin with a keyframe".to_owned());
+    }
+    let mut previous_timestamp = None;
+    let mut access_units = Vec::with_capacity(batch.access_units.len());
+    for unit in batch.access_units {
+        if unit.bytes.is_empty() {
+            return Err("Windows H.264 encoder returned an empty access unit".to_owned());
+        }
+        let timestamp = media_time_to_duration(
+            unit.timestamp_100ns
+                .ok_or_else(|| "Windows H.264 access unit has no timestamp".to_owned())?,
+            true,
+            "timestamp",
+        )?;
+        let duration = media_time_to_duration(
+            unit.duration_100ns
+                .ok_or_else(|| "Windows H.264 access unit has no duration".to_owned())?,
+            false,
+            "duration",
+        )?;
+        if previous_timestamp.is_some_and(|previous| timestamp < previous) {
+            return Err("Windows H.264 access-unit timestamps moved backwards".to_owned());
+        }
+        previous_timestamp = Some(timestamp);
+        access_units.push(H264AccessUnit {
+            bytes: unit.bytes,
+            timestamp,
+            duration,
+            keyframe: unit.keyframe,
+        });
+    }
+    Ok(H264StreamBatch {
+        encoder_name: batch.encoder_name,
+        access_units,
+    })
+}
+
+fn media_time_to_duration(
+    value_100ns: i64,
+    allow_zero: bool,
+    field: &str,
+) -> Result<Duration, String> {
+    if value_100ns < 0 || (!allow_zero && value_100ns == 0) {
+        return Err(format!(
+            "Windows H.264 access-unit {field} must be {}",
+            if allow_zero {
+                "non-negative"
+            } else {
+                "positive"
+            }
+        ));
+    }
+    let ticks = u64::try_from(value_100ns)
+        .map_err(|_| format!("Windows H.264 access-unit {field} is out of range"))?;
+    let nanoseconds = ticks
+        .checked_mul(100)
+        .ok_or_else(|| format!("Windows H.264 access-unit {field} is out of range"))?;
+    Ok(Duration::from_nanos(nanoseconds))
 }
 
 impl CaptureWorker {
@@ -783,11 +958,15 @@ fn null_terminated_utf16(buffer: &[u16]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        thread,
+        time::{Duration, Instant},
+    };
 
     use super::{
-        collect_status, enumerate_display_sources, null_terminated_utf16, positive_dimension,
-        probe_screen_capture, validate_probe_fps,
+        H264StreamConfig, SyntheticH264Stream, collect_status, enumerate_display_sources,
+        null_terminated_utf16, positive_dimension, probe_screen_capture, validate_probe_fps,
     };
 
     #[test]
@@ -852,5 +1031,51 @@ mod tests {
         assert!(status.encoder_status.contains("Annex B NAL unit"));
         assert!(status.encoder_status.contains("timestamped"));
         assert!(status.encoder_status.contains("keyframe"));
+    }
+
+    #[test]
+    #[ignore = "requires a physical Windows hardware H.264 encoder"]
+    fn synthetic_h264_worker_produces_a_timestamped_main_batch() {
+        for (width, height, bitrate_kbps) in [
+            (1_280, 800, 7_373),
+            (1_920, 1_080, 14_929),
+            (2_560, 1_440, 26_542),
+            (2_732, 2_048, 40_000),
+        ] {
+            let started = Instant::now();
+            let stream = SyntheticH264Stream::start(
+                H264StreamConfig::new(width, height, 60, bitrate_kbps)
+                    .expect("valid stream config"),
+            )
+            .expect("start H.264 worker");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let batch = loop {
+                if let Some(batch) = stream
+                    .try_next_batch()
+                    .expect("H.264 worker remains healthy")
+                {
+                    break batch;
+                }
+                assert!(Instant::now() < deadline, "H.264 worker timed out");
+                thread::sleep(Duration::from_millis(2));
+            };
+            eprintln!(
+                "{width}x{height}: {} produced {} access units in {} ms",
+                batch.encoder_name,
+                batch.access_units.len(),
+                started.elapsed().as_millis()
+            );
+            assert_eq!(batch.access_units.len(), 60);
+            assert!(batch.access_units[0].keyframe);
+            assert_eq!(batch.access_units[0].timestamp, Duration::ZERO);
+            assert!(batch.access_units.iter().all(|unit| !unit.bytes.is_empty()));
+            assert!(
+                batch
+                    .access_units
+                    .iter()
+                    .all(|unit| !unit.duration.is_zero())
+            );
+            drop(stream);
+        }
     }
 }

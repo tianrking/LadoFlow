@@ -144,7 +144,7 @@ impl MediaFoundationRuntime {
     }
 
     pub fn probe_hardware_h264_encode() -> Result<HardwareEncodeProbe, String> {
-        let batch = Self::encode_synthetic_h264(PROBE_CONFIG, PROBE_FRAME_COUNT)?;
+        let batch = Self::encode_synthetic_h264(PROBE_CONFIG, 0, PROBE_FRAME_COUNT)?;
         let encoded_bytes = batch
             .access_units
             .iter()
@@ -198,6 +198,7 @@ impl MediaFoundationRuntime {
 
     pub fn encode_synthetic_h264(
         config: H264EncoderConfig,
+        start_frame_index: u32,
         frame_count: u32,
     ) -> Result<H264EncodeBatch, String> {
         let config = config.validate()?;
@@ -215,7 +216,13 @@ impl MediaFoundationRuntime {
         let mut failures = Vec::with_capacity(activations.len());
         for activation in activations {
             let encoder = hardware_encoder_metadata(&activation);
-            let result = encode_activation(&activation, &encoder.name, config, frame_count);
+            let result = encode_activation(
+                &activation,
+                &encoder.name,
+                config,
+                start_frame_index,
+                frame_count,
+            );
             // SAFETY: this balances `ActivateObject` when activation succeeded;
             // calling it after an activation failure is also documented as safe.
             let _ = unsafe { activation.ShutdownObject() };
@@ -280,6 +287,7 @@ fn encode_activation(
     activation: &IMFActivate,
     encoder_name: &str,
     config: H264EncoderConfig,
+    start_frame_index: u32,
     frame_count: u32,
 ) -> Result<H264EncodeBatch, String> {
     let started = Instant::now();
@@ -299,9 +307,9 @@ fn encode_activation(
         .map_err(|error| format!("failed to start encoder stream: {error}"))?;
 
     let encode_result = if asynchronous {
-        encode_async(&transform, started, config, frame_count)
+        encode_async(&transform, started, config, start_frame_index, frame_count)
     } else {
-        encode_sync(&transform, started, config, frame_count)
+        encode_sync(&transform, started, config, start_frame_index, frame_count)
     };
 
     // SAFETY: cleanup messages are idempotent for a configured transform. Any
@@ -501,6 +509,7 @@ fn encode_async(
     transform: &IMFTransform,
     started: Instant,
     config: H264EncoderConfig,
+    start_frame_index: u32,
     frame_count: u32,
 ) -> Result<EncodedProbe, String> {
     let events = transform
@@ -533,7 +542,10 @@ fn encode_async(
 
         if event_type == u32::try_from(METransformNeedInput.0).unwrap_or_default() {
             if frames_submitted < frame_count {
-                let sample = create_nv12_sample(config, frames_submitted)?;
+                let frame_index = start_frame_index
+                    .checked_add(frames_submitted)
+                    .ok_or_else(|| "synthetic H.264 frame index is exhausted".to_owned())?;
+                let sample = create_nv12_sample(config, frame_index)?;
                 // SAFETY: the sample owns its buffer and remains alive for the call.
                 unsafe { transform.ProcessInput(0, &sample, 0) }
                     .map_err(|error| format!("encoder rejected NV12 frame: {error}"))?;
@@ -574,13 +586,17 @@ fn encode_sync(
     transform: &IMFTransform,
     started: Instant,
     config: H264EncoderConfig,
+    start_frame_index: u32,
     frame_count: u32,
 ) -> Result<EncodedProbe, String> {
     let mut access_units = Vec::new();
     let mut frames_submitted = 0_u32;
 
     while frames_submitted < frame_count && started.elapsed() < PROBE_TIMEOUT {
-        let sample = create_nv12_sample(config, frames_submitted)?;
+        let frame_index = start_frame_index
+            .checked_add(frames_submitted)
+            .ok_or_else(|| "synthetic H.264 frame index is exhausted".to_owned())?;
+        let sample = create_nv12_sample(config, frame_index)?;
         // SAFETY: the sample owns its buffer and remains alive for the call.
         unsafe { transform.ProcessInput(0, &sample, 0) }
             .map_err(|error| format!("encoder rejected NV12 frame: {error}"))?;
@@ -831,11 +847,20 @@ fn synthetic_nv12_frame(width: u32, height: u32, frame_index: u32) -> Result<Vec
         .map_err(|_error| "NV12 luma plane is too large".to_owned())?;
     let width_usize = usize::try_from(width).map_err(|_error| "width is too large".to_owned())?;
     let mut frame = vec![128_u8; len];
-    for (index, value) in frame[..luma_len].iter_mut().enumerate() {
-        let x = index % width_usize;
-        let y = index / width_usize;
-        let motion = usize::try_from(frame_index).unwrap_or_default() * 7;
-        *value = u8::try_from((x + y + motion) % 220 + 16).unwrap_or(16);
+    let motion = usize::try_from(frame_index)
+        .unwrap_or_default()
+        .wrapping_mul(13);
+    let bar_width = (width_usize / 12).max(2);
+    let bar_start = motion % width_usize;
+    for (row_index, row) in frame[..luma_len].chunks_exact_mut(width_usize).enumerate() {
+        let luma = u8::try_from((row_index + motion) % 160 + 48).unwrap_or(48);
+        row.fill(luma);
+        let first_end = bar_start.saturating_add(bar_width).min(width_usize);
+        row[bar_start..first_end].fill(224);
+        let wrapped = bar_width.saturating_sub(first_end.saturating_sub(bar_start));
+        if wrapped > 0 {
+            row[..wrapped.min(width_usize)].fill(224);
+        }
     }
     Ok(frame)
 }
