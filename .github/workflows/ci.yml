@@ -12,6 +12,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  android-display:
+    name: Android display
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform packages
+        run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Configure Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Test, lint, and assemble Android artifacts
+        run: >-
+          ./gradlew --no-daemon
+          testDebugUnitTest
+          lintDebug
+          assembleDebug
+          assembleDebugAndroidTest
+
+      - name: Upload Android APKs and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-display-debug
+          if-no-files-found: error
+          path: |
+            apps/android/app/build/outputs/apk/debug/app-debug.apk
+            apps/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            apps/android/app/build/reports/lint-results-debug.*
+            apps/android/app/build/reports/tests/testDebugUnitTest/**
+
   shared-rust:
     name: Shared Rust foundation
     runs-on: ubuntu-latest

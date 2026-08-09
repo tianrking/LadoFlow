@@ -1,53 +1,72 @@
 # LadoFlow Android display
 
-Native Kotlin and Jetpack Compose display endpoint for LadoFlow. The user-facing
-connection path is Android Open Accessory over a normal USB data cable; ADB is
-not part of the product connection design.
+Native Kotlin and Jetpack Compose display endpoint for LadoFlow. The production
+connection is Android Open Accessory 2.0 over a normal USB data cable: the PC is
+USB host and Android exposes the app as the accessory/device. ADB, developer
+options, accounts, and a cloud relay are not part of the display path.
 
-The Kotlin protocol layer mirrors every LDFL v1 message family in
-`docs/protocol.md`: bounded network-order framing, typed handshake, display,
-video, input, telemetry, liveness, and error payloads, plus an incremental
-decoder for arbitrarily split or coalesced transport reads.
+## Implemented boundary
 
-The USB layer registers the Android Open Accessory attach filter, requests
-temporary user permission, opens a duplex `ParcelFileDescriptor`, runs bounded
-coroutine reader/writer loops, separates control/media backpressure, and uses a
-bounded reconnect policy. See [USB accessory handoff](./docs/usb-accessory.md)
-for the exact PC-host identity and transfer contract.
+- Product UI for waiting, Android permission, LDFL handshake, configured,
+  Surface-ready Connected, Displaying, recovery, disconnect, and error states.
+- Exact LDFL v1 framing and all typed payloads from `docs/protocol.md`, including
+  golden vectors, split/coalesced reads, corrupt input, and bounded decoding.
+- AOA attach filter, temporary permission, duplex `ParcelFileDescriptor`, 64 KiB
+  incremental reads, finite queues, descriptor-close cancellation, detach, and
+  bounded reconnect.
+- One global sender sequence across every message family. Outbound priority is
+  decided before numbering; numbered frames enter one FIFO writer. Inbound
+  control/media wire order is retained and duplicate/stale sequence values fail
+  closed.
+- Display-side negotiation with exact `Hello/0`, `Capabilities/1`, and initial
+  `DisplayConfig/2` host contract. Android independently starts at sequence `0`.
+- Device/display capability probing and exact H.264 Main size/rate/bitrate
+  validation before MediaCodec configuration.
+- Asynchronous MediaCodec Surface decode boundary with Annex-B SPS/PPS parsing,
+  keyframe gating, three-access-unit bounds, Surface recreation, and low-latency
+  feature negotiation when the platform reports it.
+- Pointer/touch return through LDFL Input. Keyboard/HID mapping exists but stays
+  capability-gated and is not advertised in this milestone.
+- Telemetry reports the latest Host metadata frame ID released to Surface,
+  session-cumulative drops, and the combined pre-Surface/decoder queue depth.
 
-The H.264 layer validates Annex-B access units, captures SPS/PPS, waits for the
-LDFL `KEYFRAME` after every broken chain, prefers a platform-reported hardware
-AVC decoder, conditionally enables Android's low-latency feature, and releases
-decoded output to a lifecycle-owned `Surface`. See
-[MediaCodec boundary](./docs/media-codec.md) for the exact stream contract and
-evidence boundary.
+Protocol and platform details:
 
-The input boundary maps direct touch, mouse buttons/motion/wheel, physical
-keyboard HID usages, focus, fit-center coordinates, quarter turns, and display
-mode changes into existing LDFL v1 payloads. See
-[input and rotation](./docs/input-and-rotation.md) for backpressure and protocol
-limitations.
+- [display-side session](./docs/session-control.md)
+- [USB accessory handoff](./docs/usb-accessory.md)
+- [MediaCodec boundary](./docs/media-codec.md)
+- [input and rotation](./docs/input-and-rotation.md)
+- [physical-device validation](./docs/device-validation.md)
 
 ## Local build
 
 Requirements:
 
-- JDK 17;
+- JDK 17 (an Android Studio JBR 17+ or another JDK 17 is suitable);
 - Android SDK Platform 36 and Build Tools 35.0.0;
-- no checked-in `local.properties` or machine-specific paths.
+- no checked-in `local.properties`, signing material, or machine-specific path.
 
-From this directory:
+From `apps/android`:
 
 ```powershell
 $env:JAVA_HOME = "<path-to-jdk-17>"
 $env:ANDROID_SDK_ROOT = "<path-to-android-sdk>"
-./gradlew.bat testDebugUnitTest assembleDebug
+./gradlew.bat --no-daemon testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/`. USB transport is
-wired to the application lifecycle. MediaCodec is implemented as a standalone
-decoder boundary ready for the negotiated display-session coordinator; neither
-path has physical-device evidence yet.
+Outputs:
 
-Automated build and stream-level tests do not prove phone/tablet USB behavior.
+- `app/build/outputs/apk/debug/app-debug.apk`;
+- `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`;
+- `app/build/reports/tests/testDebugUnitTest/index.html`;
+- `app/build/reports/lint-results-debug.html`.
+
+The repository CI runs the same unit, lint, debug APK, and instrumentation-APK
+assembly tasks. A physical/emulated runtime can run the skeleton with
+`connectedDebugAndroidTest`.
+
+Automated tests and APK assembly do not prove USB permission behavior, AOA
+bulk transfer, MediaCodec output, touch return, or sustained operation on a
+phone/tablet.
+
 **未实机验证 / Not verified on a physical Android device.**
