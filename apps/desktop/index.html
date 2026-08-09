@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="LadoFlow turns a nearby device into a private, low-latency second display."
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>LadoFlow</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="#overview" aria-label="LadoFlow home">
+          <img src="/ladoflow-mark.png" alt="" />
+          <span>LadoFlow</span>
+        </a>
+
+        <nav class="navigation">
+          <a class="nav-item is-active" href="#overview">
+            <span class="nav-icon" aria-hidden="true">⌁</span>
+            Overview
+          </a>
+          <a class="nav-item" href="#link">
+            <span class="nav-icon" aria-hidden="true">↗</span>
+            Link
+          </a>
+          <a class="nav-item" href="#diagnostics">
+            <span class="nav-icon" aria-hidden="true">⌇</span>
+            Diagnostics
+          </a>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="privacy-note">
+            <span class="status-dot status-dot--cyan"></span>
+            <div>
+              <strong>Local only</strong>
+              <small>No account · no relay</small>
+            </div>
+          </div>
+          <span id="app-version" class="version-label">LadoFlow 0.1.0</span>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">DESKTOP HOST</p>
+            <h1>Your display link</h1>
+          </div>
+          <div class="host-pill">
+            <span id="host-status-dot" class="status-dot"></span>
+            <span id="host-platform">Detecting host…</span>
+          </div>
+        </header>
+
+        <section id="overview" class="hero-grid" aria-labelledby="connection-title">
+          <article class="connection-card panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">CURRENT SESSION</p>
+                <h2 id="connection-title">Ready for a nearby screen</h2>
+              </div>
+              <span id="session-badge" class="badge badge--idle">Idle</span>
+            </div>
+
+            <div class="display-visual" aria-hidden="true">
+              <div class="host-display">
+                <div class="screen-glow"></div>
+                <div class="screen-line screen-line--wide"></div>
+                <div class="screen-line"></div>
+                <span class="screen-label">HOST</span>
+              </div>
+              <div id="link-path" class="link-path">
+                <span></span><span></span><span></span>
+              </div>
+              <div class="mobile-display">
+                <div class="mobile-camera"></div>
+                <div class="mobile-wave"></div>
+                <span class="screen-label">DISPLAY</span>
+              </div>
+            </div>
+
+            <p id="session-copy" class="connection-copy">
+              Start the deterministic loopback to validate negotiation, transport,
+              pacing, and telemetry before attaching a physical device.
+            </p>
+
+            <div class="session-actions">
+              <button id="start-session" class="button button--primary" type="button">
+                <span aria-hidden="true">▶</span>
+                Start loopback
+              </button>
+              <button id="stop-session" class="button button--quiet" type="button" disabled>
+                Stop
+              </button>
+            </div>
+          </article>
+
+          <aside class="setup-card panel" aria-labelledby="setup-title">
+            <div class="panel-heading panel-heading--compact">
+              <div>
+                <p class="eyebrow">QUICK SETUP</p>
+                <h2 id="setup-title">Synthetic stream</h2>
+              </div>
+            </div>
+
+            <label class="field-label" for="resolution">Resolution</label>
+            <select id="resolution" class="field-control">
+              <option value="1920x1080">1920 × 1080</option>
+              <option value="2560x1440">2560 × 1440</option>
+              <option value="2732x2048">2732 × 2048</option>
+              <option value="1280x800">1280 × 800</option>
+            </select>
+
+            <label class="field-label" for="refresh-rate">Refresh rate</label>
+            <div class="segmented-control" id="refresh-rate" role="radiogroup" aria-label="Refresh rate">
+              <button type="button" role="radio" aria-checked="false" data-fps="30">30 Hz</button>
+              <button class="is-selected" type="button" role="radio" aria-checked="true" data-fps="60">60 Hz</button>
+            </div>
+
+            <div class="setup-summary">
+              <div>
+                <span>Codec</span>
+                <strong>H.264 baseline</strong>
+              </div>
+              <div>
+                <span>Transport</span>
+                <strong>In-memory duplex</strong>
+              </div>
+              <div>
+                <span>Protocol</span>
+                <strong id="protocol-version">LDFL v1</strong>
+              </div>
+            </div>
+          </aside>
+        </section>
+
+        <section id="diagnostics" class="metrics-section" aria-labelledby="metrics-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">LIVE EVIDENCE</p>
+              <h2 id="metrics-title">Frame path</h2>
+            </div>
+            <button id="refresh-status" class="text-button" type="button">Refresh status</button>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card">
+              <span class="metric-label">Presented</span>
+              <strong id="frames-presented">0</strong>
+              <small>frames</small>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Frame rate</span>
+              <strong id="actual-fps">0.0</strong>
+              <small>fps</small>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Median latency</span>
+              <strong id="p50-latency">—</strong>
+              <small>ms</small>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">P95 latency</span>
+              <strong id="p95-latency">—</strong>
+              <small>ms</small>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Superseded</span>
+              <strong id="frames-superseded">0</strong>
+              <small>frames</small>
+            </article>
+          </div>
+        </section>
+
+        <section id="link" class="platform-grid">
+          <article class="panel platform-card" aria-labelledby="capture-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">HOST CAPTURE</p>
+                <h2 id="capture-title">macOS readiness</h2>
+              </div>
+              <span id="capture-permission" class="badge badge--idle">Checking</span>
+            </div>
+            <p id="capture-backend" class="platform-copy">
+              Detecting the native capture backend and available displays.
+            </p>
+            <div id="display-list" class="display-list" aria-live="polite"></div>
+            <button id="request-permission" class="button button--secondary" type="button">
+              Request screen recording access
+            </button>
+          </article>
+
+          <article class="panel architecture-card" aria-labelledby="architecture-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">PORTABLE BY DESIGN</p>
+                <h2 id="architecture-title">One core, native edges</h2>
+              </div>
+            </div>
+            <ol class="pipeline" aria-label="LadoFlow host pipeline">
+              <li><span>01</span><div><strong>Native capture</strong><small>ScreenCaptureKit · Windows Graphics Capture</small></div></li>
+              <li><span>02</span><div><strong>Shared Rust core</strong><small>Session · protocol · pacing · telemetry</small></div></li>
+              <li><span>03</span><div><strong>Local transport</strong><small>USB first · trusted LAN later</small></div></li>
+              <li><span>04</span><div><strong>Native display</strong><small>Android MediaCodec · Apple VideoToolbox</small></div></li>
+            </ol>
+          </article>
+        </section>
+
+        <p id="error-banner" class="error-banner" role="alert" hidden></p>
+      </main>
+    </div>
+  </body>
+</html>

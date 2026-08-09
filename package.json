@@ -5,7 +5,11 @@
   "description": "Cross-platform workspace for LadoFlow",
   "license": "MIT",
   "scripts": {
-    "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
-  }
+    "check": "pnpm check:rust && pnpm check:desktop",
+    "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+    "check:desktop": "pnpm --filter @ladoflow/desktop build",
+    "dev:desktop": "pnpm --filter @ladoflow/desktop tauri dev",
+    "build:desktop": "pnpm --filter @ladoflow/desktop tauri build"
+  },
+  "packageManager": "pnpm@10.26.0"
 }
-

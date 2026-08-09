@@ -1,0 +1,36 @@
+[package]
+name = "ladoflow-desktop"
+description = "Cross-platform LadoFlow desktop host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "ladoflow_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ladoflow-core = { path = "../../../crates/ladoflow-core" }
+ladoflow-media = { path = "../../../crates/ladoflow-media" }
+ladoflow-protocol = { path = "../../../crates/ladoflow-protocol" }
+ladoflow-transport = { path = "../../../crates/ladoflow-transport" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "0.25", features = ["catalina"] }
+
+[lints]
+workspace = true
