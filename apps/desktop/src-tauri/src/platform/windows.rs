@@ -456,11 +456,14 @@ fn query_encoder_status() -> String {
         .join(", ");
     match diagnostics.encode_probe {
         Ok(probe) => format!(
-            "Media Foundation hardware H.264 encode verified with {}: {}x{}, {} frame(s), {} bytes / {} Annex B NAL unit(s), {} ms; available: {names}",
+            "Media Foundation hardware H.264 Main encode verified with {}: {}x{}, {} input frame(s), {} timestamped / {} access unit(s), {} keyframe(s), {} bytes / {} Annex B NAL unit(s), {} ms; available: {names}",
             probe.encoder_name,
             probe.width,
             probe.height,
             probe.frames_submitted,
+            probe.timestamped_access_units,
+            probe.access_units,
+            probe.keyframes,
             probe.encoded_bytes,
             probe.nal_units,
             probe.elapsed_ms
@@ -847,5 +850,7 @@ mod tests {
         eprintln!("{}", status.encoder_status);
         assert!(status.encoder_status.contains("encode verified"));
         assert!(status.encoder_status.contains("Annex B NAL unit"));
+        assert!(status.encoder_status.contains("timestamped"));
+        assert!(status.encoder_status.contains("keyframe"));
     }
 }

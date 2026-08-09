@@ -33,9 +33,12 @@ regions, dimensions, and startup timing. Its persistent native worker also
 enumerates Media Foundation H.264 encoders that explicitly accept NV12 and are
 registered as hardware MFTs. A bounded probe activates each candidate in order,
 handles asynchronous input/output events and dynamic output renegotiation, and
-requires non-empty Annex B H.264 output before reporting encode verification.
-The probe has produced a real Intel Quick Sync bitstream on physical hardware;
-it is not yet the long-running capture-to-encoder path or a virtual display.
+requires non-empty Annex B H.264 Main output before reporting encode
+verification. It preserves the MFT's access-unit boundaries, sample timestamps,
+sample durations, and clean-point/IDR keyframe evidence. The probe has produced
+a timestamped Intel Quick Sync bitstream with a verified keyframe on physical
+hardware; it is not yet the long-running capture-to-encoder path or a virtual
+display.
 
 The Windows host also includes an explicit Android Open Accessory preparation
 path. Shared Rust code validates the exact AOA protocol query, six terminated

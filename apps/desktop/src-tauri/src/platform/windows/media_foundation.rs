@@ -22,17 +22,17 @@ use ::windows::{
             MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE,
             MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
             MF_VERSION, MFCreateDXGIDeviceManager, MFCreateMediaType, MFCreateMemoryBuffer,
-            MFCreateSample, MFMediaType_Video, MFSTARTUP_FULL, MFShutdown, MFStartup,
-            MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
-            MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute,
-            MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_COMMAND_FLUSH,
+            MFCreateSample, MFMediaType_Video, MFSTARTUP_FULL, MFSampleExtension_CleanPoint,
+            MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE,
+            MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_HARDWARE_URL_Attribute,
+            MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_COMMAND_FLUSH,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM,
             MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
             MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
             MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_INFO,
             MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO,
             MFT_TRANSFORM_CLSID_Attribute, MFTEnumEx, MFVideoFormat_H264, MFVideoFormat_NV12,
-            MFVideoInterlace_Progressive, eAVEncH264VProfile_Base,
+            MFVideoInterlace_Progressive, eAVEncH264VProfile_Main,
         },
         System::Com::CoTaskMemFree,
     },
@@ -47,6 +47,59 @@ const PROBE_FRAME_COUNT: u32 = 8;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const HUNDRED_NANOSECONDS_PER_SECOND: i64 = 10_000_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct H264EncoderConfig {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate: u32,
+}
+
+impl H264EncoderConfig {
+    pub const fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Self {
+        Self {
+            width,
+            height,
+            fps,
+            bitrate,
+        }
+    }
+
+    fn validate(self) -> Result<Self, String> {
+        nv12_sample_size(self.width, self.height)?;
+        if self.fps == 0 {
+            return Err("H.264 frame rate must be non-zero".to_owned());
+        }
+        if self.bitrate == 0 {
+            return Err("H.264 bitrate must be non-zero".to_owned());
+        }
+        Ok(self)
+    }
+
+    fn frame_duration_100ns(self) -> i64 {
+        HUNDRED_NANOSECONDS_PER_SECOND / i64::from(self.fps)
+    }
+}
+
+const PROBE_CONFIG: H264EncoderConfig =
+    H264EncoderConfig::new(PROBE_WIDTH, PROBE_HEIGHT, PROBE_FPS, PROBE_BITRATE);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EncodedAccessUnit {
+    pub bytes: Vec<u8>,
+    pub timestamp_100ns: Option<i64>,
+    pub duration_100ns: Option<i64>,
+    pub keyframe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct H264EncodeBatch {
+    pub encoder_name: String,
+    pub access_units: Vec<EncodedAccessUnit>,
+    pub frames_submitted: u32,
+    pub elapsed_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HardwareEncoder {
     pub name: String,
@@ -60,6 +113,9 @@ pub(super) struct HardwareEncodeProbe {
     pub width: u32,
     pub height: u32,
     pub frames_submitted: u32,
+    pub access_units: usize,
+    pub timestamped_access_units: usize,
+    pub keyframes: usize,
     pub encoded_bytes: usize,
     pub nal_units: usize,
     pub elapsed_ms: u64,
@@ -88,6 +144,66 @@ impl MediaFoundationRuntime {
     }
 
     pub fn probe_hardware_h264_encode() -> Result<HardwareEncodeProbe, String> {
+        let batch = Self::encode_synthetic_h264(PROBE_CONFIG, PROBE_FRAME_COUNT)?;
+        let encoded_bytes = batch
+            .access_units
+            .iter()
+            .map(|unit| unit.bytes.len())
+            .sum::<usize>();
+        let nal_units = batch
+            .access_units
+            .iter()
+            .map(|unit| count_annex_b_nal_units(&unit.bytes))
+            .sum::<usize>();
+        let timestamped_access_units = batch
+            .access_units
+            .iter()
+            .filter(|unit| {
+                unit.timestamp_100ns.is_some()
+                    && unit.duration_100ns.is_some_and(|duration| duration > 0)
+            })
+            .count();
+        let keyframes = batch
+            .access_units
+            .iter()
+            .filter(|unit| unit.keyframe)
+            .count();
+        if encoded_bytes == 0 || nal_units == 0 {
+            return Err(format!(
+                "encoder returned {encoded_bytes} bytes and {nal_units} Annex B H.264 NAL units"
+            ));
+        }
+        if timestamped_access_units != batch.access_units.len() {
+            return Err(format!(
+                "encoder timestamped only {timestamped_access_units} of {} H.264 access units",
+                batch.access_units.len()
+            ));
+        }
+        if keyframes == 0 {
+            return Err("encoder produced no independently decodable H.264 keyframe".to_owned());
+        }
+        Ok(HardwareEncodeProbe {
+            encoder_name: batch.encoder_name,
+            width: PROBE_CONFIG.width,
+            height: PROBE_CONFIG.height,
+            frames_submitted: batch.frames_submitted,
+            access_units: batch.access_units.len(),
+            timestamped_access_units,
+            keyframes,
+            encoded_bytes,
+            nal_units,
+            elapsed_ms: batch.elapsed_ms,
+        })
+    }
+
+    pub fn encode_synthetic_h264(
+        config: H264EncoderConfig,
+        frame_count: u32,
+    ) -> Result<H264EncodeBatch, String> {
+        let config = config.validate()?;
+        if frame_count == 0 {
+            return Err("H.264 encode batch must contain at least one frame".to_owned());
+        }
         let mut activations = hardware_h264_activations()?;
         activations.sort_by_key(|activation| hardware_encoder_metadata(activation).name);
         if activations.is_empty() {
@@ -99,7 +215,7 @@ impl MediaFoundationRuntime {
         let mut failures = Vec::with_capacity(activations.len());
         for activation in activations {
             let encoder = hardware_encoder_metadata(&activation);
-            let result = probe_activation(&activation, &encoder.name);
+            let result = encode_activation(&activation, &encoder.name, config, frame_count);
             // SAFETY: this balances `ActivateObject` when activation succeeded;
             // calling it after an activation failure is also documented as safe.
             let _ = unsafe { activation.ShutdownObject() };
@@ -160,10 +276,12 @@ fn hardware_encoder_metadata(activation: &IMFActivate) -> HardwareEncoder {
     }
 }
 
-fn probe_activation(
+fn encode_activation(
     activation: &IMFActivate,
     encoder_name: &str,
-) -> Result<HardwareEncodeProbe, String> {
+    config: H264EncoderConfig,
+    frame_count: u32,
+) -> Result<H264EncodeBatch, String> {
     let started = Instant::now();
     // SAFETY: the activation owns the returned COM object until the matching
     // `ShutdownObject` call in the caller.
@@ -171,7 +289,7 @@ fn probe_activation(
         .map_err(|error| format!("failed to activate encoder: {error}"))?;
     let asynchronous = unlock_if_asynchronous(&transform)?;
     let _d3d_manager = bind_d3d11_manager_if_supported(&transform)?;
-    configure_transform(&transform)?;
+    configure_transform(&transform, config)?;
 
     // SAFETY: these messages follow successful media-type negotiation and are
     // paired with end-of-stream/flush cleanup below.
@@ -181,9 +299,9 @@ fn probe_activation(
         .map_err(|error| format!("failed to start encoder stream: {error}"))?;
 
     let encode_result = if asynchronous {
-        encode_async(&transform, started)
+        encode_async(&transform, started, config, frame_count)
     } else {
-        encode_sync(&transform, started)
+        encode_sync(&transform, started, config, frame_count)
     };
 
     // SAFETY: cleanup messages are idempotent for a configured transform. Any
@@ -193,24 +311,29 @@ fn probe_activation(
     let _ = unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0) };
 
     let encoded = encode_result?;
-    if encoded.bytes.is_empty() {
+    if encoded.access_units.is_empty() {
         return Err("encoder completed without producing H.264 bytes".to_owned());
     }
-    let nal_units = count_annex_b_nal_units(&encoded.bytes);
+    let encoded_bytes = encoded
+        .access_units
+        .iter()
+        .map(|unit| unit.bytes.len())
+        .sum::<usize>();
+    let nal_units = encoded
+        .access_units
+        .iter()
+        .map(|unit| count_annex_b_nal_units(&unit.bytes))
+        .sum::<usize>();
     if nal_units == 0 {
         return Err(format!(
-            "encoder returned {} bytes without an Annex B H.264 start code",
-            encoded.bytes.len()
+            "encoder returned {encoded_bytes} bytes without an Annex B H.264 start code"
         ));
     }
 
-    Ok(HardwareEncodeProbe {
+    Ok(H264EncodeBatch {
         encoder_name: encoder_name.to_owned(),
-        width: PROBE_WIDTH,
-        height: PROBE_HEIGHT,
+        access_units: encoded.access_units,
         frames_submitted: encoded.frames_submitted,
-        encoded_bytes: encoded.bytes.len(),
-        nal_units,
         elapsed_ms: millis_u64(started.elapsed()),
     })
 }
@@ -283,23 +406,23 @@ fn unlock_if_asynchronous(transform: &IMFTransform) -> Result<bool, String> {
     Ok(is_asynchronous)
 }
 
-fn configure_transform(transform: &IMFTransform) -> Result<(), String> {
+fn configure_transform(transform: &IMFTransform, config: H264EncoderConfig) -> Result<(), String> {
     // Media Foundation's H.264 encoder contract requires output negotiation
     // before input negotiation.
-    let output = create_video_type(MFVideoFormat_H264, false)?;
-    set_u32(&output, &MF_MT_AVG_BITRATE, PROBE_BITRATE)?;
+    let output = create_video_type(MFVideoFormat_H264, false, config)?;
+    set_u32(&output, &MF_MT_AVG_BITRATE, config.bitrate)?;
     set_u32(
         &output,
         &MF_MT_MPEG2_PROFILE,
-        u32::try_from(eAVEncH264VProfile_Base.0)
-            .map_err(|_error| "invalid H.264 baseline profile value".to_owned())?,
+        u32::try_from(eAVEncH264VProfile_Main.0)
+            .map_err(|_error| "invalid H.264 main profile value".to_owned())?,
     )?;
     // SAFETY: stream zero is the single input/output stream reported by video
     // encoder MFTs returned for this category and type pair.
     unsafe { transform.SetOutputType(0, &output, 0) }
         .map_err(|error| format!("failed to set H.264 output media type: {error}"))?;
 
-    let input = create_video_type(MFVideoFormat_NV12, true)?;
+    let input = create_video_type(MFVideoFormat_NV12, true, config)?;
     unsafe { transform.SetInputType(0, &input, 0) }
         .map_err(|error| format!("failed to set NV12 input media type: {error}"))?;
     Ok(())
@@ -308,6 +431,7 @@ fn configure_transform(transform: &IMFTransform) -> Result<(), String> {
 fn create_video_type(
     subtype: GUID,
     uncompressed: bool,
+    config: H264EncoderConfig,
 ) -> Result<::windows::Win32::Media::MediaFoundation::IMFMediaType, String> {
     // SAFETY: the returned COM object owns its attribute storage.
     let media_type = unsafe { MFCreateMediaType() }
@@ -317,9 +441,9 @@ fn create_video_type(
     set_u64(
         &media_type,
         &MF_MT_FRAME_SIZE,
-        pack_u32_pair(PROBE_WIDTH, PROBE_HEIGHT),
+        pack_u32_pair(config.width, config.height),
     )?;
-    set_u64(&media_type, &MF_MT_FRAME_RATE, pack_u32_pair(PROBE_FPS, 1))?;
+    set_u64(&media_type, &MF_MT_FRAME_RATE, pack_u32_pair(config.fps, 1))?;
     set_u64(&media_type, &MF_MT_PIXEL_ASPECT_RATIO, pack_u32_pair(1, 1))?;
     set_u32(
         &media_type,
@@ -328,7 +452,7 @@ fn create_video_type(
             .map_err(|_error| "invalid progressive interlace value".to_owned())?,
     )?;
     if uncompressed {
-        let sample_size = nv12_sample_size(PROBE_WIDTH, PROBE_HEIGHT)?;
+        let sample_size = nv12_sample_size(config.width, config.height)?;
         set_u32(&media_type, &MF_MT_FIXED_SIZE_SAMPLES, 1)?;
         set_u32(&media_type, &MF_MT_ALL_SAMPLES_INDEPENDENT, 1)?;
         set_u32(
@@ -369,17 +493,23 @@ fn set_u64(
 }
 
 struct EncodedProbe {
-    bytes: Vec<u8>,
+    access_units: Vec<EncodedAccessUnit>,
     frames_submitted: u32,
 }
 
-fn encode_async(transform: &IMFTransform, started: Instant) -> Result<EncodedProbe, String> {
+fn encode_async(
+    transform: &IMFTransform,
+    started: Instant,
+    config: H264EncoderConfig,
+    frame_count: u32,
+) -> Result<EncodedProbe, String> {
     let events = transform
         .cast::<IMFMediaEventGenerator>()
         .map_err(|error| format!("asynchronous encoder has no event generator: {error}"))?;
-    let mut bytes = Vec::new();
+    let mut access_units = Vec::new();
     let mut frames_submitted = 0_u32;
     let mut draining = false;
+    let mut drain_complete = false;
 
     while started.elapsed() < PROBE_TIMEOUT {
         // SAFETY: non-blocking event retrieval returns either a fully owned
@@ -402,8 +532,8 @@ fn encode_async(transform: &IMFTransform, started: Instant) -> Result<EncodedPro
             .map_err(|error| format!("failed to read encoder event type: {error}"))?;
 
         if event_type == u32::try_from(METransformNeedInput.0).unwrap_or_default() {
-            if frames_submitted < PROBE_FRAME_COUNT {
-                let sample = create_nv12_sample(frames_submitted)?;
+            if frames_submitted < frame_count {
+                let sample = create_nv12_sample(config, frames_submitted)?;
                 // SAFETY: the sample owns its buffer and remains alive for the call.
                 unsafe { transform.ProcessInput(0, &sample, 0) }
                     .map_err(|error| format!("encoder rejected NV12 frame: {error}"))?;
@@ -418,37 +548,39 @@ fn encode_async(transform: &IMFTransform, started: Instant) -> Result<EncodedPro
             }
         } else if event_type == u32::try_from(METransformHaveOutput.0).unwrap_or_default() {
             if let Some(output) = take_output(transform)? {
-                bytes.extend_from_slice(&output);
-                if count_annex_b_nal_units(&bytes) > 0 {
-                    return Ok(EncodedProbe {
-                        bytes,
-                        frames_submitted,
-                    });
+                if !output.bytes.is_empty() {
+                    access_units.push(output);
                 }
             }
         } else if event_type == u32::try_from(METransformDrainComplete.0).unwrap_or_default() {
+            drain_complete = true;
             break;
         }
     }
 
-    if started.elapsed() >= PROBE_TIMEOUT {
+    if !drain_complete {
         return Err(format!(
-            "hardware encoder did not produce H.264 output within {} ms after {frames_submitted} frames",
+            "hardware encoder did not finish the H.264 batch within {} ms after {frames_submitted} frames",
             PROBE_TIMEOUT.as_millis()
         ));
     }
     Ok(EncodedProbe {
-        bytes,
+        access_units,
         frames_submitted,
     })
 }
 
-fn encode_sync(transform: &IMFTransform, started: Instant) -> Result<EncodedProbe, String> {
-    let mut bytes = Vec::new();
+fn encode_sync(
+    transform: &IMFTransform,
+    started: Instant,
+    config: H264EncoderConfig,
+    frame_count: u32,
+) -> Result<EncodedProbe, String> {
+    let mut access_units = Vec::new();
     let mut frames_submitted = 0_u32;
 
-    while frames_submitted < PROBE_FRAME_COUNT && started.elapsed() < PROBE_TIMEOUT {
-        let sample = create_nv12_sample(frames_submitted)?;
+    while frames_submitted < frame_count && started.elapsed() < PROBE_TIMEOUT {
+        let sample = create_nv12_sample(config, frames_submitted)?;
         // SAFETY: the sample owns its buffer and remains alive for the call.
         unsafe { transform.ProcessInput(0, &sample, 0) }
             .map_err(|error| format!("encoder rejected NV12 frame: {error}"))?;
@@ -457,12 +589,8 @@ fn encode_sync(transform: &IMFTransform, started: Instant) -> Result<EncodedProb
         loop {
             match take_output(transform) {
                 Ok(Some(output)) => {
-                    bytes.extend_from_slice(&output);
-                    if count_annex_b_nal_units(&bytes) > 0 {
-                        return Ok(EncodedProbe {
-                            bytes,
-                            frames_submitted,
-                        });
+                    if !output.bytes.is_empty() {
+                        access_units.push(output);
                     }
                 }
                 Ok(None) => break,
@@ -472,8 +600,33 @@ fn encode_sync(transform: &IMFTransform, started: Instant) -> Result<EncodedProb
         }
     }
 
+    if frames_submitted < frame_count {
+        return Err(format!(
+            "hardware encoder accepted only {frames_submitted} of {frame_count} frames within {} ms",
+            PROBE_TIMEOUT.as_millis()
+        ));
+    }
+
+    // SAFETY: all requested input has been submitted before draining.
+    unsafe { transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0) }
+        .map_err(|error| format!("failed to end encoder input stream: {error}"))?;
+    unsafe { transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0) }
+        .map_err(|error| format!("failed to drain encoder: {error}"))?;
+    while started.elapsed() < PROBE_TIMEOUT {
+        match take_output(transform) {
+            Ok(Some(output)) => {
+                if !output.bytes.is_empty() {
+                    access_units.push(output);
+                }
+            }
+            Ok(None) => {}
+            Err(error) if error.contains("needs more input") => break,
+            Err(error) => return Err(error),
+        }
+    }
+
     Ok(EncodedProbe {
-        bytes,
+        access_units,
         frames_submitted,
     })
 }
@@ -484,7 +637,7 @@ fn output_stream_info(transform: &IMFTransform) -> Result<MFT_OUTPUT_STREAM_INFO
         .map_err(|error| format!("failed to query encoder output buffer requirements: {error}"))
 }
 
-fn take_output(transform: &IMFTransform) -> Result<Option<Vec<u8>>, String> {
+fn take_output(transform: &IMFTransform) -> Result<Option<EncodedAccessUnit>, String> {
     let info = output_stream_info(transform)?;
     let provides_samples =
         info.dwFlags & u32::try_from(MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0).unwrap_or_default() != 0;
@@ -537,7 +690,7 @@ fn take_output(transform: &IMFTransform) -> Result<Option<Vec<u8>>, String> {
     let Some(sample) = sample else {
         return Ok(None);
     };
-    read_sample_bytes(&sample).map(Some)
+    read_access_unit(&sample).map(Some)
 }
 
 fn renegotiate_output_type(transform: &IMFTransform) -> Result<(), String> {
@@ -576,8 +729,8 @@ fn create_output_sample(size: u32) -> Result<IMFSample, String> {
     Ok(sample)
 }
 
-fn create_nv12_sample(frame_index: u32) -> Result<IMFSample, String> {
-    let frame = synthetic_nv12_frame(PROBE_WIDTH, PROBE_HEIGHT, frame_index)?;
+fn create_nv12_sample(config: H264EncoderConfig, frame_index: u32) -> Result<IMFSample, String> {
+    let frame = synthetic_nv12_frame(config.width, config.height, frame_index)?;
     let size = u32::try_from(frame.len()).map_err(|_error| "NV12 frame is too large".to_owned())?;
     // SAFETY: the returned objects own their allocations; the buffer is locked
     // only while the source slice is copied.
@@ -588,12 +741,28 @@ fn create_nv12_sample(frame_index: u32) -> Result<IMFSample, String> {
     write_buffer(&buffer, &frame)?;
     unsafe { sample.AddBuffer(&buffer) }
         .map_err(|error| format!("failed to attach NV12 input buffer: {error}"))?;
-    let duration = HUNDRED_NANOSECONDS_PER_SECOND / i64::from(PROBE_FPS);
+    let duration = config.frame_duration_100ns();
     unsafe { sample.SetSampleTime(i64::from(frame_index) * duration) }
         .map_err(|error| format!("failed to timestamp NV12 input sample: {error}"))?;
     unsafe { sample.SetSampleDuration(duration) }
         .map_err(|error| format!("failed to set NV12 input duration: {error}"))?;
     Ok(sample)
+}
+
+fn read_access_unit(sample: &IMFSample) -> Result<EncodedAccessUnit, String> {
+    let bytes = read_sample_bytes(sample)?;
+    let clean_point_key = MFSampleExtension_CleanPoint;
+    let clean_point =
+        unsafe { sample.GetUINT32(&raw const clean_point_key) }.is_ok_and(|value| value != 0);
+    let timestamp_100ns = unsafe { sample.GetSampleTime() }.ok();
+    let duration_100ns = unsafe { sample.GetSampleDuration() }.ok();
+    let keyframe = clean_point || annex_b_contains_idr(&bytes);
+    Ok(EncodedAccessUnit {
+        bytes,
+        timestamp_100ns,
+        duration_100ns,
+        keyframe,
+    })
 }
 
 fn write_buffer(buffer: &IMFMediaBuffer, source: &[u8]) -> Result<(), String> {
@@ -700,6 +869,23 @@ fn count_annex_b_nal_units(bytes: &[u8]) -> usize {
     count
 }
 
+fn annex_b_contains_idr(bytes: &[u8]) -> bool {
+    annex_b_nal_types(bytes).any(|nal_type| nal_type == 5)
+}
+
+fn annex_b_nal_types(bytes: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    (0..bytes.len()).filter_map(move |index| {
+        let payload_index = if bytes.get(index..index.saturating_add(4)) == Some(&[0, 0, 0, 1]) {
+            index.checked_add(4)?
+        } else if bytes.get(index..index.saturating_add(3)) == Some(&[0, 0, 1]) {
+            index.checked_add(3)?
+        } else {
+            return None;
+        };
+        bytes.get(payload_index).map(|header| header & 0x1f)
+    })
+}
+
 fn millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -779,7 +965,10 @@ fn format_guid(guid: GUID) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{count_annex_b_nal_units, format_guid, nv12_sample_size, synthetic_nv12_frame};
+    use super::{
+        H264EncoderConfig, annex_b_contains_idr, count_annex_b_nal_units, format_guid,
+        nv12_sample_size, synthetic_nv12_frame,
+    };
     use windows::core::GUID;
 
     #[test]
@@ -794,7 +983,29 @@ mod tests {
     fn annex_b_parser_counts_three_and_four_byte_start_codes() {
         let stream = [0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 0, 1, 0x65];
         assert_eq!(count_annex_b_nal_units(&stream), 3);
+        assert!(annex_b_contains_idr(&stream));
+        assert!(!annex_b_contains_idr(&[0, 0, 0, 1, 0x41, 2, 3]));
         assert_eq!(count_annex_b_nal_units(&[1, 2, 3]), 0);
+    }
+
+    #[test]
+    fn encoder_configuration_rejects_invalid_video_geometry() {
+        assert!(
+            H264EncoderConfig::new(640, 360, 60, 4_000_000)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            H264EncoderConfig::new(641, 360, 60, 4_000_000)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            H264EncoderConfig::new(640, 360, 0, 4_000_000)
+                .validate()
+                .is_err()
+        );
+        assert!(H264EncoderConfig::new(640, 360, 60, 0).validate().is_err());
     }
 
     #[test]

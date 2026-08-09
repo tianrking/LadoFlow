@@ -68,9 +68,9 @@ a hardware D3D11 device, and runs a short free-threaded capture probe. The probe
 has received real GPU surfaces on physical Windows hardware and shuts its event
 handler, frame pool, and session down explicitly. A separate bounded Media
 Foundation probe has activated Intel Quick Sync, submitted synthetic NV12
-frames, handled its asynchronous format change, and verified Annex B H.264
-bytes. The production capture-to-encode loop, service, and driver remain native
-milestones.
+frames, handled its asynchronous format change, and verified timestamped Annex B
+H.264 Main access units including an IDR/clean-point keyframe. The production
+capture-to-encode loop, service, and driver remain native milestones.
 
 ### Phase A — capture/encode proof of concept
 
@@ -84,9 +84,10 @@ milestones.
    hardware MFT flag and report their real names without treating discovery as
    an encoding proof.
 5. [x] Activate a hardware MFT, negotiate NV12 to H.264, handle asynchronous
-   events and output stream changes, and require actual Annex B bytes. The
-   physical validation currently covers Intel Quick Sync; NVIDIA discovery is
-   not counted as a successful encode on this machine.
+   events and output stream changes, preserve access-unit timestamps/durations,
+   and require actual Annex B Main bytes plus keyframe evidence. The physical
+   validation currently covers Intel Quick Sync; NVIDIA discovery is not counted
+   as a successful encode on this machine.
 6. Hand captured Direct3D surfaces to the selected Media Foundation encoder
    through an NV12 conversion path without a CPU readback.
 7. Feed encoded access units into the existing protocol/transport/runtime and
