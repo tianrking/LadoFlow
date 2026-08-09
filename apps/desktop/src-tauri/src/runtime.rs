@@ -23,7 +23,8 @@ use ladoflow_protocol::{
 };
 use ladoflow_transport::LoopbackConfig as TransportLoopbackConfig;
 use ladoflow_transport::{
-    Channel, ConnectionState, Packet, PacketTransport, SupersessionKey, loopback_pair,
+    Channel, ConnectionState, Packet, PacketTransport, SupersessionKey, TcpPacketTransport,
+    loopback_pair,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,9 @@ use crate::host_protocol::{
 use crate::platform::{
     CapturedH264Stream, H264AccessUnit, H264StreamConfig, NativeInputController, PlatformStatus,
     UsbAccessoryManager, UsbAccessoryProbeReport, collect_status, prepare_capture_display_mode,
+};
+use crate::tether::{
+    TetherConnection, TetherPairingReport, TetherPairingRequest, pair_tether_connection,
 };
 
 const LATENCY_WINDOW: NonZeroUsize = NonZeroUsize::new(240).expect("240 is non-zero");
@@ -47,6 +51,7 @@ const USB_RECONNECT_CANCEL_POLL: Duration = Duration::from_millis(25);
 const SENT_VIDEO_HISTORY: usize = 1_024;
 const LOOPBACK_TRANSPORT_NAME: &str = "In-memory duplex";
 const USB_TRANSPORT_NAME: &str = "Android Open Accessory USB";
+const TETHER_TRANSPORT_NAME: &str = "Android USB tether TCP";
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,11 +178,11 @@ impl SharedState {
         self.sent_video_ordinals.clear();
     }
 
-    fn reset_for_usb_negotiation(&mut self, config: LoopbackConfig) {
+    fn reset_for_android_negotiation(&mut self, config: LoopbackConfig, transport: &'static str) {
         self.phase = SessionPhaseView::Negotiating;
         self.session = None;
         self.config = Some(config);
-        self.transport = USB_TRANSPORT_NAME;
+        self.transport = transport;
         self.peer_name = None;
         self.last_error = None;
         self.started_at = Some(Instant::now());
@@ -190,7 +195,7 @@ impl SharedState {
         self.sent_video_ordinals.clear();
     }
 
-    fn establish_usb_control(
+    fn establish_android_control(
         &mut self,
         config: LoopbackConfig,
         session: Session,
@@ -228,7 +233,7 @@ impl SharedState {
         self.sent_video_ordinals.clear();
     }
 
-    fn fail_usb_session(&mut self, error: String) {
+    fn fail_android_session(&mut self, error: String) {
         if let Some(session) = self.session.as_mut() {
             let _result = session.transport_lost();
         }
@@ -294,21 +299,41 @@ pub struct DesktopRuntime {
     shared: Arc<Mutex<SharedState>>,
     worker: Mutex<Option<Worker>>,
     usb_accessory: UsbAccessoryManager,
+    tether_connection: Mutex<Option<TetherConnection>>,
 }
 
 impl DesktopRuntime {
     pub fn snapshot(&self) -> HostSnapshot {
-        self.lock_shared().snapshot(self.platform_status())
+        let platform = self.platform_status();
+        self.lock_shared().snapshot(platform)
     }
 
     pub fn prepare_android_usb(&self) -> UsbAccessoryProbeReport {
         self.usb_accessory.prepare()
     }
 
+    pub fn pair_android_tether(
+        &self,
+        request: TetherPairingRequest,
+    ) -> Result<TetherPairingReport, String> {
+        if self
+            .lock_worker()
+            .as_ref()
+            .is_some_and(|worker| !worker.handle.is_finished())
+        {
+            return Err("stop the active display session before pairing Android".to_owned());
+        }
+        self.usb_accessory.disconnect()?;
+        drop(self.lock_tether_connection().take());
+        let (connection, report) = pair_tether_connection(request)?;
+        *self.lock_tether_connection() = Some(connection);
+        Ok(report)
+    }
+
     pub fn disconnect_android_usb(&self) -> Result<HostSnapshot, String> {
         let usb_session_active = {
             let shared = self.lock_shared();
-            shared.transport == USB_TRANSPORT_NAME
+            matches!(shared.transport, USB_TRANSPORT_NAME | TETHER_TRANSPORT_NAME)
                 && matches!(
                     shared.phase,
                     SessionPhaseView::Negotiating
@@ -320,6 +345,7 @@ impl DesktopRuntime {
         if usb_session_active {
             let _stopped = self.stop()?;
         }
+        drop(self.lock_tether_connection().take());
         self.usb_accessory.disconnect()?;
         Ok(self.snapshot())
     }
@@ -349,9 +375,40 @@ impl DesktopRuntime {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let worker_shared = Arc::clone(&self.shared);
+        let tether_connection = self.lock_tether_connection().take();
         let use_usb = self.usb_accessory.connection_state() == ConnectionState::Connected;
-        let handle = if use_usb {
-            self.lock_shared().reset_for_usb_negotiation(config);
+        let handle = if let Some(connection) = tether_connection {
+            if connection.transport().connection_state() != ConnectionState::Connected {
+                let status = connection.transport().status();
+                let detail = status
+                    .last_error()
+                    .unwrap_or("the authenticated socket closed before streaming");
+                self.lock_shared().fail_android_session(format!(
+                    "Android USB-tether link is no longer ready: {detail}. Pair again."
+                ));
+                return Err("Android USB-tether link closed; pair the display again".to_owned());
+            }
+            self.lock_shared()
+                .reset_for_android_negotiation(config, TETHER_TRANSPORT_NAME);
+            let tether_transport = connection.into_transport();
+            thread::Builder::new()
+                .name("ladoflow-tether-session".to_owned())
+                .spawn(move || {
+                    run_tether_control_session(
+                        &worker_shared,
+                        &worker_cancel,
+                        config,
+                        display_id.as_deref(),
+                        tether_transport,
+                    );
+                })
+                .map_err(|error| {
+                    self.lock_shared().phase = SessionPhaseView::Failed;
+                    format!("failed to start USB-tether session worker: {error}")
+                })?
+        } else if use_usb {
+            self.lock_shared()
+                .reset_for_android_negotiation(config, USB_TRANSPORT_NAME);
             let usb_transport = self.usb_accessory.clone();
             thread::Builder::new()
                 .name("ladoflow-usb-session".to_owned())
@@ -398,18 +455,79 @@ impl DesktopRuntime {
                 .map_err(|_| "the loopback worker panicked while stopping".to_owned())?;
         }
 
-        let mut shared = self.lock_shared();
-        if let Some(session) = shared.session.as_mut() {
-            session.close();
+        {
+            let mut shared = self.lock_shared();
+            if let Some(session) = shared.session.as_mut() {
+                session.close();
+            }
+            shared.phase = SessionPhaseView::Stopped;
         }
-        shared.phase = SessionPhaseView::Stopped;
-        let snapshot = shared.snapshot(self.platform_status());
-        drop(shared);
-        Ok(snapshot)
+        Ok(self.snapshot())
     }
 
     fn platform_status(&self) -> PlatformStatus {
         let mut platform = collect_status();
+        if let Some(connection) = self.lock_tether_connection().as_ref() {
+            let status = connection.transport().status();
+            if status.state() == ConnectionState::Connected {
+                platform.usb_link_state = crate::platform::UsbLinkState::Connected;
+                platform.usb_status = format!(
+                    "Authenticated USB-tether socket to {}; ready to start LDFL.",
+                    connection.endpoint()
+                );
+            } else {
+                platform.usb_link_state = crate::platform::UsbLinkState::Failed;
+                status
+                    .last_error()
+                    .unwrap_or("authenticated USB-tether socket closed")
+                    .clone_into(&mut platform.usb_status);
+            }
+            return platform;
+        }
+
+        let tether_session = {
+            let shared = self.lock_shared();
+            (shared.transport == TETHER_TRANSPORT_NAME).then(|| {
+                (
+                    shared.phase,
+                    shared.last_error.clone(),
+                    shared.peer_name.clone(),
+                )
+            })
+        };
+        if let Some((phase, last_error, peer_name)) = tether_session {
+            match phase {
+                SessionPhaseView::Negotiating => {
+                    platform.usb_link_state = crate::platform::UsbLinkState::Connecting;
+                    "USB-tether socket authenticated; negotiating LDFL."
+                        .clone_into(&mut platform.usb_status);
+                }
+                SessionPhaseView::Connected | SessionPhaseView::Streaming => {
+                    platform.usb_link_state = crate::platform::UsbLinkState::Connected;
+                    platform.usb_status = format!(
+                        "USB-tether LDFL session active{}.",
+                        peer_name.map_or_else(String::new, |name| format!(" with {name}"))
+                    );
+                }
+                SessionPhaseView::Failed => {
+                    platform.usb_link_state = crate::platform::UsbLinkState::Failed;
+                    platform.usb_status =
+                        last_error.unwrap_or_else(|| "USB-tether LDFL session failed".to_owned());
+                }
+                SessionPhaseView::Recovering => {
+                    platform.usb_link_state = crate::platform::UsbLinkState::Connecting;
+                    platform.usb_status = last_error
+                        .unwrap_or_else(|| "USB-tether LDFL session is recovering".to_owned());
+                }
+                SessionPhaseView::Idle | SessionPhaseView::Stopped => {
+                    platform.usb_link_state = crate::platform::UsbLinkState::Ready;
+                    "USB-tether session stopped; pair Android again to reconnect."
+                        .clone_into(&mut platform.usb_status);
+                }
+            }
+            return platform;
+        }
+
         if let Some((state, detail)) = self.usb_accessory.runtime_status() {
             platform.usb_link_state = state;
             platform.usb_status = detail;
@@ -425,6 +543,12 @@ impl DesktopRuntime {
 
     fn lock_worker(&self) -> MutexGuard<'_, Option<Worker>> {
         self.worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_tether_connection(&self) -> MutexGuard<'_, Option<TetherConnection>> {
+        self.tether_connection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -451,6 +575,30 @@ impl Drop for UsbRuntimeSessionGuard {
     }
 }
 
+fn run_tether_control_session(
+    shared: &Arc<Mutex<SharedState>>,
+    cancel: &AtomicBool,
+    config: LoopbackConfig,
+    display_id: Option<&str>,
+    mut transport: TcpPacketTransport,
+) {
+    let result =
+        run_android_control_session_inner(shared, cancel, config, display_id, &mut transport);
+    if cancel.load(Ordering::Acquire) {
+        return;
+    }
+    if let Err(error) = result {
+        let socket_detail = transport
+            .status()
+            .last_error()
+            .map(|detail| format!(" Socket: {detail}."))
+            .unwrap_or_default();
+        lock_arc(shared).fail_android_session(format!(
+            "Android USB-tether session failed: {error}.{socket_detail} Pair again to reconnect."
+        ));
+    }
+}
+
 fn run_usb_control_session(
     shared: &Arc<Mutex<SharedState>>,
     cancel: &AtomicBool,
@@ -463,18 +611,22 @@ fn run_usb_control_session(
     let mut reconnect_attempt = 1_u32;
 
     loop {
-        let error =
-            match run_usb_control_session_inner(shared, cancel, config, display_id, &mut transport)
-            {
-                Ok(()) => return,
-                Err(error) => error,
-            };
+        let error = match run_android_control_session_inner(
+            shared,
+            cancel,
+            config,
+            display_id,
+            &mut transport,
+        ) {
+            Ok(()) => return,
+            Err(error) => error,
+        };
         if cancel.load(Ordering::Acquire) {
             return;
         }
 
         if transport.connection_state() != ConnectionState::Disconnected {
-            lock_arc(shared).fail_usb_session(error);
+            lock_arc(shared).fail_android_session(error);
             return;
         }
 
@@ -489,7 +641,7 @@ fn run_usb_control_session(
         loop {
             let now = Instant::now();
             if now >= deadline {
-                lock_arc(shared).fail_usb_session(format!(
+                lock_arc(shared).fail_android_session(format!(
                     "Android USB did not recover within {} seconds: {last_error}",
                     USB_RECONNECT_WINDOW.as_secs()
                 ));
@@ -501,7 +653,7 @@ fn run_usb_control_session(
                 return;
             }
             if Instant::now() >= deadline {
-                lock_arc(shared).fail_usb_session(format!(
+                lock_arc(shared).fail_android_session(format!(
                     "Android USB did not recover within {} seconds: {last_error}",
                     USB_RECONNECT_WINDOW.as_secs()
                 ));
@@ -546,7 +698,7 @@ fn wait_cancellable(cancel: &AtomicBool, duration: Duration) -> bool {
     }
 }
 
-fn run_usb_control_session_inner(
+fn run_android_control_session_inner(
     shared: &Arc<Mutex<SharedState>>,
     cancel: &AtomicBool,
     config: LoopbackConfig,
@@ -565,7 +717,7 @@ fn run_usb_control_session_inner(
     let mut next_sequence = established.next_sequence;
     {
         let mut state = lock_arc(shared);
-        state.establish_usb_control(
+        state.establish_android_control(
             negotiated_config,
             established.session,
             established.peer_name,
@@ -1187,9 +1339,9 @@ mod tests {
 
     use super::{
         DesktopRuntime, H264AccessUnit, LoopbackConfig, SessionPhaseView, SharedState,
-        UsbControlContext, align_media_clock, apply_usb_telemetry, handle_usb_control,
-        negotiated_session, run_usb_control_session_inner, send_usb_h264_access_unit,
-        usb_reconnect_delay, wait_cancellable,
+        USB_TRANSPORT_NAME, UsbControlContext, align_media_clock, apply_usb_telemetry,
+        handle_usb_control, negotiated_session, run_android_control_session_inner,
+        send_usb_h264_access_unit, usb_reconnect_delay, wait_cancellable,
     };
 
     #[test]
@@ -1236,8 +1388,8 @@ mod tests {
             fps: 60,
         };
         let mut state = SharedState::new();
-        state.reset_for_usb_negotiation(config);
-        state.establish_usb_control(
+        state.reset_for_android_negotiation(config, USB_TRANSPORT_NAME);
+        state.establish_android_control(
             config,
             negotiated_session(config).expect("test session"),
             "LadoFlow Android".to_owned(),
@@ -1385,7 +1537,7 @@ mod tests {
             fps: 60,
         };
         let mut state = SharedState::new();
-        state.establish_usb_control(
+        state.establish_android_control(
             config,
             negotiated_session(config).expect("test session"),
             "LadoFlow Android".to_owned(),
@@ -1450,7 +1602,7 @@ mod tests {
             fps: 30,
         };
         let mut state = SharedState::new();
-        state.establish_usb_control(
+        state.establish_android_control(
             config,
             negotiated_session(config).expect("test session"),
             "LadoFlow Android".to_owned(),
@@ -1621,12 +1773,15 @@ mod tests {
         shared
             .lock()
             .expect("shared state")
-            .reset_for_usb_negotiation(LoopbackConfig {
-                width: 1_280,
-                height: 720,
-                fps: 30,
-            });
-        run_usb_control_session_inner(
+            .reset_for_android_negotiation(
+                LoopbackConfig {
+                    width: 1_280,
+                    height: 720,
+                    fps: 30,
+                },
+                USB_TRANSPORT_NAME,
+            );
+        run_android_control_session_inner(
             &shared,
             &cancel,
             LoopbackConfig {

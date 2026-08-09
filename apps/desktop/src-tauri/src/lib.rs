@@ -2,6 +2,7 @@ mod commands;
 mod host_protocol;
 mod platform;
 mod runtime;
+mod tether;
 
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ pub fn run() {
             commands::request_screen_capture_access,
             commands::run_screen_capture_probe,
             commands::prepare_android_usb,
+            commands::pair_android_tether,
             commands::disconnect_android_usb,
             commands::enable_virtual_display,
             commands::disable_virtual_display,

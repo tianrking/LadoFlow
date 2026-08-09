@@ -14,6 +14,7 @@ use crate::{
         request_capture_access,
     },
     runtime::{DesktopRuntime, HostSnapshot, LoopbackConfig},
+    tether::{TetherPairingReport, TetherPairingRequest},
 };
 
 #[tauri::command]
@@ -59,6 +60,17 @@ pub async fn prepare_android_usb(
     tauri::async_runtime::spawn_blocking(move || runtime.prepare_android_usb())
         .await
         .map_err(|error| format!("Android USB preparation worker failed: {error}"))
+}
+
+#[tauri::command]
+pub async fn pair_android_tether(
+    runtime: State<'_, Arc<DesktopRuntime>>,
+    request: TetherPairingRequest,
+) -> Result<TetherPairingReport, String> {
+    let runtime = Arc::clone(runtime.inner());
+    tauri::async_runtime::spawn_blocking(move || runtime.pair_android_tether(request))
+        .await
+        .map_err(|error| format!("Android USB-tether pairing worker failed: {error}"))?
 }
 
 #[tauri::command]

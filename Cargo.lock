@@ -1813,6 +1813,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "windows",
+ "zeroize",
 ]
 
 [[package]]
