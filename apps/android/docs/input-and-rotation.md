@@ -1,0 +1,53 @@
+# Android input and rotation boundary
+
+The decoder `SurfaceView` can attach an `AndroidInputController`. It translates
+Android events into the existing LDFL v1 `InputPayload` layouts; no Android-only
+wire events or fields are added.
+
+## Event mapping
+
+| Android input | LDFL v1 event | Delivery class |
+| --- | --- | --- |
+| direct touch down/up/cancel | touch begin/end/cancel | critical |
+| direct touch move | touch move | coalescible |
+| mouse hover/move | absolute pointer move | coalescible |
+| mouse button press/release | pointer button | critical |
+| mouse wheel | wheel | coalescible |
+| physical keyboard down/up | USB HID keyboard usage | critical |
+| Surface focus change | focus | critical |
+
+Android pointer IDs are allocated into the 16 contact IDs permitted by LDFL
+v1. Pressure is clamped to `0..1` and normalized over the protocol's full u16
+range. Keyboard repeat-down events are suppressed because the host should own
+normal key-repeat behavior after receiving one press and one release. Android
+key codes without a USB HID keyboard-page mapping are ignored; text composition
+and IME strings require a later protocol version.
+
+The eventual session coordinator must enqueue critical events with the
+suspending bounded send path. Coalescible move/wheel events may use the
+non-blocking path and be dropped under backpressure. This prevents a saturated
+motion stream from losing a key release or touch end.
+
+## Coordinates, resolution, and rotation
+
+Coordinates are fit-center mapped from the Android view to coded pixels. Input
+in letterbox bars is ignored on begin; an active contact moving outside is
+clamped so its matching end/cancel can still be sent. Pure Kotlin tests cover
+letterboxing, all four quarter turns, u16/contact bounds, and landscape-to-
+portrait resolution changes.
+
+LDFL v1 advertises `DYNAMIC_ROTATION` as a capability but defines no standalone
+rotation payload. Therefore the current interoperable mode change is a new
+`DisplayConfig` with the new coded width/height followed by fresh Annex-B
+SPS/PPS and a frame marked `KEYFRAME`. Android cancels active contacts, resets
+the viewport, recreates MediaCodec, and waits for that keyframe. A local
+quarter-turn enum exists for Surface layouts that are already rotated, but it
+is never serialized as an invented protocol extension.
+
+## Evidence boundary
+
+Coordinate/contact/HID mapping is covered by local JVM tests, and the Android
+event adapter compiles against API 36. Physical multi-touch, mouse, keyboard,
+rotation, and remote host injection have not been exercised.
+
+**未实机验证 / Not verified on a physical Android device.**

@@ -22,6 +22,12 @@ decoded output to a lifecycle-owned `Surface`. See
 [MediaCodec boundary](./docs/media-codec.md) for the exact stream contract and
 evidence boundary.
 
+The input boundary maps direct touch, mouse buttons/motion/wheel, physical
+keyboard HID usages, focus, fit-center coordinates, quarter turns, and display
+mode changes into existing LDFL v1 payloads. See
+[input and rotation](./docs/input-and-rotation.md) for backpressure and protocol
+limitations.
+
 ## Local build
 
 Requirements:

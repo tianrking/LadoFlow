@@ -712,6 +712,7 @@ private fun DiagnosticsScreen(state: DisplayUiState) {
             )
             DiagnosticRow("Host", state.hostName ?: "Not connected")
             DiagnosticRow("Protocol", "LDFL v1 · frame and payload codec ready")
+            DiagnosticRow("Reverse input", "Touch · mouse · keyboard boundary ready")
         }
         SettingsCard(title = "Decoder") {
             DiagnosticRow("Primary codec", "H.264 / AVC")
