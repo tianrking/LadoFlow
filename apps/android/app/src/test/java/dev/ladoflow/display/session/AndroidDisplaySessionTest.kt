@@ -6,6 +6,7 @@ import dev.ladoflow.display.media.VideoDecoder
 import dev.ladoflow.display.media.VideoDecoderEvent
 import dev.ladoflow.display.media.VideoDecoderMetrics
 import dev.ladoflow.display.media.VideoDecoderState
+import dev.ladoflow.display.media.coordinatedHostDisplayModes
 import dev.ladoflow.display.protocol.ButtonState
 import dev.ladoflow.display.protocol.CapabilitiesPayload
 import dev.ladoflow.display.protocol.CodecCapabilities
@@ -72,6 +73,34 @@ class AndroidDisplaySessionTest {
         assertEquals(1uL, capabilitiesFrame.sequence)
         assertEquals(harness.localCapabilities, capabilitiesFrame.decodePayload())
         assertTrue(harness.localCapabilities.input.contains(InputCapabilities.Keyboard))
+        assertEquals(FeatureFlags.None, harness.localCapabilities.features)
+    }
+
+    @Test
+    fun standardFallbackModesAreAcceptedExactlyWithoutIndependentDimensionClamping() = runTest {
+        val maximum = capabilities(2_732, 2_048)
+        val harness = Harness(backgroundScope, maximum)
+        harness.connectAndNegotiate()
+
+        coordinatedHostDisplayModes.forEachIndexed { index, mode ->
+            val configuration = DisplayConfigPayload(
+                width = mode.width,
+                height = mode.height,
+                refreshMillihz = 60_000u,
+                bitrateKbps = 12_000u,
+                codec = VideoCodec.H264,
+                profile = CodecProfile.H264Main,
+            )
+            harness.transport.framesMutable.emit(
+                LdflFrame.fromPayload(FrameFlags.None, (index + 2).toULong(), configuration),
+            )
+            eventually { harness.decoder.configurations.size == index + 1 }
+        }
+
+        assertEquals(
+            coordinatedHostDisplayModes.map { it.width to it.height },
+            harness.decoder.configurations.map { it.width to it.height },
+        )
     }
 
     @Test
@@ -401,10 +430,12 @@ class AndroidDisplaySessionTest {
         assertEquals(11uL, telemetry.frameId)
     }
 
-    private class Harness(scope: kotlinx.coroutines.CoroutineScope) {
+    private class Harness(
+        scope: kotlinx.coroutines.CoroutineScope,
+        val localCapabilities: CapabilitiesPayload = capabilities(1_920, 1_080),
+    ) {
         val transport = FakeTransport()
         val decoder = FakeDecoder()
-        val localCapabilities = capabilities(1_920, 1_080)
         val session = AndroidDisplaySession(
             transport = transport,
             decoder = decoder,
@@ -501,7 +532,7 @@ class AndroidDisplaySessionTest {
             maxBitrateKbps = 20_000u,
             codecs = CodecCapabilities.H264,
             input = input,
-            features = FeatureFlags.DynamicRotation,
+            features = FeatureFlags.None,
         )
 
         private fun hostHelloFrame(sequence: ULong = 0u) = LdflFrame.fromPayload(

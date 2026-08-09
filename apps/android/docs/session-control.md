@@ -27,7 +27,17 @@ frame-rate, and bitrate ranges with the physical display modes, and prefers a
 codec that Android reports as hardware accelerated. The current input mask is
 `POINTER | TOUCH | KEYBOARD`. Input is sent only when its family appears in
 both the Android and Host masks; an unnegotiated family is dropped locally.
-The only feature flag is `DYNAMIC_ROTATION`.
+Android currently advertises `FeatureFlags.None`. In particular it does not
+advertise `DYNAMIC_ROTATION`: a local orientation/window change only rescales
+the existing coded Surface and input mapping.
+
+The capability probe normalizes the physical display to landscape long-edge ×
+short-edge bounds, then evaluates the coordinated Host fallback ladder as
+whole modes. It advertises the largest rectangle for which every included mode
+passes H.264 Main decoder checks at a common refresh of at least 30 Hz. The
+Host still chooses one complete mode; neither side independently clamps width
+or height. Android repeats the exact `areSizeAndRateSupported` check before
+accepting each `DisplayConfig`.
 
 ## Configuration and Surface gate
 

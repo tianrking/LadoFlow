@@ -49,13 +49,14 @@ coded viewport and Surface lease generation; the mapping recalculates from the
 new view bounds. A stale Surface callback from the destroyed Activity is ignored
 after a newer lease attaches.
 
-LDFL v1 advertises `DYNAMIC_ROTATION` as a capability but defines no standalone
-rotation payload. Therefore the current interoperable mode change is a new
-`DisplayConfig` with the new coded width/height followed by fresh Annex-B
-SPS/PPS and a frame marked `KEYFRAME`. Android cancels active contacts, resets
-the viewport, recreates MediaCodec, and waits for that keyframe. A local
-quarter-turn enum exists for Surface layouts that are already rotated, but it
-is never serialized as an invented protocol extension.
+Android advertises no `DYNAMIC_ROTATION` feature. A local orientation or window
+change keeps the current coded `DisplayConfig`; Surface fit and input mapping
+change locally. A Host-initiated compatible `DisplayConfig` can still replace
+the coded resolution, followed by fresh Annex-B SPS/PPS and a frame marked
+`KEYFRAME`; Android cancels active contacts, resets the viewport, recreates
+MediaCodec, and waits for that keyframe. A local quarter-turn enum exists for
+Surface layouts that are already rotated, but it is never serialized as an
+invented protocol extension.
 
 ## Evidence boundary
 

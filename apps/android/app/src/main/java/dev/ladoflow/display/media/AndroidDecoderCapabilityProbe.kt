@@ -24,6 +24,35 @@ data class AndroidDisplayCapabilityEvidence(
 internal val androidDisplayInputCapabilities: InputCapabilities =
     InputCapabilities.Pointer or InputCapabilities.Touch or InputCapabilities.Keyboard
 
+internal val androidDisplayFeatureCapabilities: FeatureFlags = FeatureFlags.None
+
+internal data class CoordinatedDisplayMode(
+    val width: Int,
+    val height: Int,
+)
+
+/** Ordered Windows Host fallback contract; this is policy, not a new LDFL field. */
+internal val coordinatedHostDisplayModes: List<CoordinatedDisplayMode> = listOf(
+    CoordinatedDisplayMode(2732, 2048),
+    CoordinatedDisplayMode(2560, 1600),
+    CoordinatedDisplayMode(2560, 1440),
+    CoordinatedDisplayMode(2048, 1536),
+    CoordinatedDisplayMode(1920, 1200),
+    CoordinatedDisplayMode(1920, 1080),
+    CoordinatedDisplayMode(1600, 1200),
+    CoordinatedDisplayMode(1366, 768),
+    CoordinatedDisplayMode(1280, 800),
+    CoordinatedDisplayMode(1280, 720),
+    CoordinatedDisplayMode(1024, 768),
+    CoordinatedDisplayMode(1024, 640),
+    CoordinatedDisplayMode(960, 600),
+    CoordinatedDisplayMode(960, 540),
+    CoordinatedDisplayMode(800, 600),
+    CoordinatedDisplayMode(800, 500),
+    CoordinatedDisplayMode(640, 480),
+    CoordinatedDisplayMode(640, 400),
+)
+
 /** Queries the actual display modes and H.264 Main decoder limits used for negotiation. */
 fun probeAndroidDisplayCapabilities(context: Context): AndroidDisplayCapabilityEvidence {
     val displayLimits = queryDisplayLimits(context)
@@ -47,21 +76,15 @@ fun probeAndroidDisplayCapabilities(context: Context): AndroidDisplayCapabilityE
         ?: throw UnsupportedOperationException(
             "No Android H.264 Main decoder can sustain at least 30 Hz at a display-sized mode",
         )
-    val maximumDimension = minOf(
-        displayLimits.maximumDimension,
-        selected.maximumWidth,
-        selected.maximumHeight,
-        UShort.MAX_VALUE.toInt(),
-    )
     return AndroidDisplayCapabilityEvidence(
         capabilities = CapabilitiesPayload(
-            maxWidth = maximumDimension,
-            maxHeight = maximumDimension,
+            maxWidth = selected.maximumWidth,
+            maxHeight = selected.maximumHeight,
             maxRefreshMillihz = selected.maximumRefreshMillihz,
             maxBitrateKbps = selected.maximumBitrateKbps,
             codecs = CodecCapabilities.H264,
             input = androidDisplayInputCapabilities,
-            features = FeatureFlags.DynamicRotation,
+            features = androidDisplayFeatureCapabilities,
         ),
         decoderName = selected.decoderName,
         hardwareAcceleration = selected.hardwareAcceleration,
@@ -87,12 +110,9 @@ private fun probeDecoder(
         return null
     }
     val video = capabilities.videoCapabilities ?: return null
-    val probeSize = findSupportedDisplaySize(video, display.width, display.height) ?: return null
-    val codecRefreshUpper = runCatching {
-        video.getSupportedFrameRatesFor(probeSize.first, probeSize.second).upper
-    }.getOrNull() ?: return null
+    val supportedModes = findAdvertisableStandardModes(video, display) ?: return null
     val refreshMillihz = floor(
-        minOf(display.maximumRefreshHertz, codecRefreshUpper) * 1_000.0,
+        supportedModes.maximumRefreshHertz * 1_000.0,
     ).toLong().coerceIn(1L, UInt.MAX_VALUE.toLong()).toUInt()
     val maximumBitrateKbps = (video.bitrateRange.upper.toLong() / 1_000L)
         .coerceIn(1L, UInt.MAX_VALUE.toLong())
@@ -109,34 +129,57 @@ private fun probeDecoder(
     return DecoderProbe(
         decoderName = info.name,
         hardwareAcceleration = evidence,
-        maximumWidth = video.supportedWidths.upper,
-        maximumHeight = video.supportedHeights.upper,
+        maximumWidth = supportedModes.maximumWidth,
+        maximumHeight = supportedModes.maximumHeight,
         maximumRefreshMillihz = refreshMillihz,
         maximumBitrateKbps = maximumBitrateKbps,
-        probeWidth = probeSize.first,
-        probeHeight = probeSize.second,
+        probeWidth = supportedModes.maximumWidth,
+        probeHeight = supportedModes.maximumHeight,
     )
 }
 
-private fun findSupportedDisplaySize(
+private fun findAdvertisableStandardModes(
     video: MediaCodecInfo.VideoCapabilities,
-    requestedWidth: Int,
-    requestedHeight: Int,
-): Pair<Int, Int>? {
-    var width = alignDown(
-        minOf(requestedWidth, video.supportedWidths.upper),
-        video.widthAlignment,
-    )
-    var height = alignDown(
-        minOf(requestedHeight, video.supportedHeights.upper),
-        video.heightAlignment,
-    )
-    repeat(16) {
-        if (width > 0 && height > 0 && runCatching { video.isSizeSupported(width, height) }.getOrDefault(false)) {
-            return width to height
+    display: DisplayLimits,
+): AdvertisableStandardModes? {
+    val physicalWidth = maxOf(display.width, display.height)
+    val physicalHeight = minOf(display.width, display.height)
+    val candidateCaps = coordinatedHostDisplayModes.filter { mode ->
+        mode.width <= physicalWidth &&
+            mode.height <= physicalHeight &&
+            mode.width <= video.supportedWidths.upper &&
+            mode.height <= video.supportedHeights.upper
+    }
+
+    for (candidate in candidateCaps) {
+        val advertisedModes = coordinatedHostDisplayModes.filter { mode ->
+            mode.width <= candidate.width && mode.height <= candidate.height
         }
-        width = alignDown(width * 3 / 4, video.widthAlignment)
-        height = alignDown(height * 3 / 4, video.heightAlignment)
+        val supportedRefreshUppers = advertisedModes.mapNotNull { mode ->
+            val supportsMinimum = runCatching {
+                video.areSizeAndRateSupported(
+                    mode.width,
+                    mode.height,
+                    MINIMUM_REFRESH_MILLIHZ.toDouble() / 1_000.0,
+                )
+            }.getOrDefault(false)
+            if (!supportsMinimum) return@mapNotNull null
+            runCatching {
+                video.getSupportedFrameRatesFor(mode.width, mode.height).upper
+            }.getOrNull()
+        }
+        if (supportedRefreshUppers.size != advertisedModes.size) continue
+        val commonRefreshUpper = minOf(
+            display.maximumRefreshHertz,
+            supportedRefreshUppers.minOrNull() ?: continue,
+        )
+        if (commonRefreshUpper * 1_000.0 >= MINIMUM_REFRESH_MILLIHZ.toDouble()) {
+            return AdvertisableStandardModes(
+                maximumWidth = candidate.width,
+                maximumHeight = candidate.height,
+                maximumRefreshHertz = commonRefreshUpper,
+            )
+        }
     }
     return null
 }
@@ -158,8 +201,6 @@ private fun queryDisplayLimits(context: Context): DisplayLimits {
     return DisplayLimits(width, height, maximumRefresh)
 }
 
-private fun alignDown(value: Int, alignment: Int): Int = value - value % alignment
-
 private fun HardwareAccelerationEvidence.selectionRank(): Int = when (this) {
     HardwareAccelerationEvidence.ReportedHardware -> 0
     HardwareAccelerationEvidence.NotReportedByPlatform -> 1
@@ -170,9 +211,13 @@ private data class DisplayLimits(
     val width: Int,
     val height: Int,
     val maximumRefreshHertz: Double,
-) {
-    val maximumDimension: Int = maxOf(width, height)
-}
+)
+
+private data class AdvertisableStandardModes(
+    val maximumWidth: Int,
+    val maximumHeight: Int,
+    val maximumRefreshHertz: Double,
+)
 
 private data class DecoderProbe(
     val decoderName: String,
