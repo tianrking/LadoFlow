@@ -4,6 +4,11 @@ Native Kotlin and Jetpack Compose display endpoint for LadoFlow. The user-facing
 connection path is Android Open Accessory over a normal USB data cable; ADB is
 not part of the product connection design.
 
+The Kotlin protocol layer mirrors every LDFL v1 message family in
+`docs/protocol.md`: bounded network-order framing, typed handshake, display,
+video, input, telemetry, liveness, and error payloads, plus an incremental
+decoder for arbitrarily split or coalesced transport reads.
+
 ## Local build
 
 Requirements:
@@ -21,5 +26,5 @@ $env:ANDROID_SDK_ROOT = "<path-to-android-sdk>"
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/`. USB transport and
-hardware decode are intentionally reported as inactive in this initial UI
-slice; implementation evidence is added in subsequent commits.
+hardware decode remain intentionally reported as inactive until their own
+verified slices land.

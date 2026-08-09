@@ -669,7 +669,7 @@ private fun DiagnosticsScreen(state: DisplayUiState) {
             DiagnosticRow("State", stageLabel(state.stage))
             DiagnosticRow("Transport", "USB Accessory · not active")
             DiagnosticRow("Host", state.hostName ?: "Not connected")
-            DiagnosticRow("Protocol", "LDFL v1 · codec integration pending")
+            DiagnosticRow("Protocol", "LDFL v1 · frame and payload codec ready")
         }
         SettingsCard(title = "Decoder") {
             DiagnosticRow("Primary codec", "H.264 / AVC")
@@ -679,8 +679,9 @@ private fun DiagnosticsScreen(state: DisplayUiState) {
         }
         SettingsCard(title = "Build boundary") {
             Text(
-                "This foundation includes the native Compose UI and deterministic connection state model. " +
-                    "USB I/O and hardware video decode are delivered in the next verified slices.",
+                "This foundation includes the native Compose UI, deterministic connection state model, " +
+                    "and the bounded LDFL v1 Kotlin codec. USB I/O and hardware video decode are delivered " +
+                    "in the next verified slices.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
