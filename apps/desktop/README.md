@@ -44,9 +44,11 @@ The Windows host also includes an explicit Android Open Accessory preparation
 path. Shared Rust code validates the exact AOA protocol query, six terminated
 identity strings, mode-switch request, and short-transfer failures. The Windows
 adapter then waits for Google accessory re-enumeration, claims the app interface,
-and keeps it owned by a cancellable duplex worker. Outbound frames are selected
-control-first, short writes resume without interleaving frames, every write is
-capped at 64 KiB, and inbound chunks feed the bounded LDFL incremental decoder.
+and keeps it owned by a cancellable duplex worker. Outbound control and media
+queue heads are merged by their already-assigned global LDFL sequence, short
+writes resume without interleaving frames, every write is capped at 64 KiB, and
+inbound chunks feed the bounded LDFL incremental decoder. This prevents a later
+control frame from overtaking an earlier encoded frame on the USB byte stream.
 Read-only status never sends vendor requests; only the user's **Connect Android
 USB** action attempts a mode switch. **Disconnect Android USB** joins the worker
 and releases the interface. The current loopback media producer is not yet wired

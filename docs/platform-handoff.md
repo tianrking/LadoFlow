@@ -117,9 +117,11 @@ claim the app interface before reporting readiness.
    unsupported version zero, identity bounds, and short writes.
 3. [x] Add explicit Windows mode switching, re-enumeration timeout, descriptor
    inspection, and bulk-interface claim diagnostics.
-4. [x] Keep the claimed handle open in a cancellable duplex worker, prioritize
-   control between complete frames, cap writes at 64 KiB, retry short writes,
-   and feed 64 KiB reads into the bounded LDFL incremental decoder.
+4. [x] Keep the claimed handle open in a cancellable duplex worker, merge
+   already-numbered control/media heads by global LDFL sequence, cap writes at
+   64 KiB, retry short writes, and feed 64 KiB reads into the bounded LDFL
+   incremental decoder. Any control priority must happen before sequence
+   assignment; wire order is always monotonic.
 5. [x] Compose the worker's bounded host endpoint into the runtime for
    Hello/Capabilities/DisplayConfig, monotonic peer sequencing, Ping/Pong,
    typed active control, cancellation, timeout, and failure diagnostics.
