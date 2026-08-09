@@ -28,3 +28,26 @@ The wire protocol is transport-independent. USB and LAN adapters carry the same 
 
 The first implementation milestone covers bounded framing and negotiation types, not actual video transport.
 
+## Version-one frame header
+
+Every integer uses network byte order. The decoder validates the complete header before allocating payload storage.
+
+| Offset | Bytes | Field |
+| ---: | ---: | --- |
+| 0 | 4 | ASCII magic `LDFL` |
+| 4 | 2 | Protocol version |
+| 6 | 2 | Header length (`24`) |
+| 8 | 2 | Message type |
+| 10 | 2 | Validated flags |
+| 12 | 8 | Sender sequence number |
+| 20 | 4 | Payload length |
+
+Control payloads are limited to 64 KiB. A single encoded video payload is limited to 16 MiB. The incremental decoder also enforces a configurable total buffer ceiling.
+
+Currently implemented typed control payloads:
+
+- `Hello`: supported version range, endpoint role, 16-byte nonce, and a UTF-8 implementation name of at most 64 bytes;
+- `Capabilities`: maximum dimensions, refresh rate, bitrate, codec mask, input mask, and optional feature mask.
+
+Display configuration, video metadata, input events, telemetry, ping/pong timestamps, pairing authentication, and encryption remain subsequent milestones.
+
