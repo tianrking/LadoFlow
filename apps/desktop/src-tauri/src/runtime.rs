@@ -367,6 +367,8 @@ fn run_loopback(
             PaceDecision::Exhausted => break,
         };
         if tick.skipped() > 0 {
+            let producer_skipped = producer.advance_to_sequence(tick.index());
+            debug_assert_eq!(producer_skipped, tick.skipped());
             let mut state = lock_arc(shared);
             state.frames_dropped = state.frames_dropped.saturating_add(tick.skipped());
         }

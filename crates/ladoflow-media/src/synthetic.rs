@@ -149,6 +149,24 @@ impl SyntheticFrameProducer {
         self.next_sequence
     }
 
+    /// Advance the next emitted frame to `sequence` without allocating payloads.
+    ///
+    /// This is useful when a real-time pacer skips obsolete slots after a
+    /// delayed poll. Calls never rewind the producer. The return value is the
+    /// number of frames skipped.
+    #[must_use]
+    pub fn advance_to_sequence(&mut self, sequence: u64) -> u64 {
+        let Some(current) = self.next_sequence else {
+            return 0;
+        };
+        if sequence <= current {
+            return 0;
+        }
+
+        self.next_sequence = Some(sequence);
+        sequence - current
+    }
+
     /// Generate the next frame.
     pub fn next_frame(&mut self) -> Option<MediaFrame> {
         self.next()

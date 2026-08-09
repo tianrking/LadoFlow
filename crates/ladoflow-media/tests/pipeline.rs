@@ -138,6 +138,22 @@ fn synthetic_payloads_are_repeatable_and_sequence_specific() {
 }
 
 #[test]
+fn synthetic_producer_advances_without_allocating_obsolete_frames() {
+    let rate = FrameRate::from_hz(60).expect("valid rate");
+    let mut frames = producer(rate, 30);
+
+    assert_eq!(frames.advance_to_sequence(120), 120);
+    assert_eq!(frames.next_sequence(), Some(120));
+    let frame = frames.next_frame().expect("advanced frame");
+    assert_eq!(frame.metadata().sequence(), 120);
+    assert_eq!(frame.metadata().presentation_time(), Duration::from_secs(2));
+    assert_eq!(frame.metadata().kind(), FrameKind::Key);
+
+    assert_eq!(frames.advance_to_sequence(100), 0);
+    assert_eq!(frames.next_sequence(), Some(121));
+}
+
+#[test]
 fn latest_frame_replaces_and_drops_superseded_work() {
     let rate = FrameRate::from_hz(30).expect("valid rate");
     let config = SchedulerConfig::new(rate, Duration::from_millis(100), 1024)
