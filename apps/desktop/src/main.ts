@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
 type SessionPhase =
   | "idle"
@@ -120,6 +120,11 @@ interface UsbAccessoryProbeReport {
   maxPacketSize: number | null;
 }
 
+interface TetherPairingReport {
+  endpoint: string;
+  detail: string;
+}
+
 interface VirtualDisplayActionReport {
   passed: boolean;
   status: VirtualDisplayStatus;
@@ -151,7 +156,13 @@ const elements = {
   disableVirtualDisplay: getButton("disable-virtual-display"),
   virtualDisplayResult: getElement("virtual-display-result"),
   prepareAndroidUsb: getButton("prepare-android-usb"),
+  pairAndroidTether: getButton("pair-android-tether"),
   disconnectAndroidUsb: getButton("disconnect-android-usb"),
+  tetherPairingForm: getElement("tether-pairing-form"),
+  tetherEndpoint: getInput("tether-endpoint"),
+  tetherToken: getInput("tether-token"),
+  tetherPairingResult: getElement("tether-pairing-result"),
+  directUsbNote: getElement("direct-usb-note"),
   usbStatus: getElement("usb-status"),
   usbProbeResult: getElement("usb-probe-result"),
   resolution: getSelect("resolution"),
@@ -171,6 +182,72 @@ let selectedDisplayId: string | null = null;
 let pollingHandle: number | undefined;
 let busy = false;
 let lastSnapshot: HostSnapshot | null = null;
+const nativeBridgeAvailable = isTauri();
+
+function browserPreviewSnapshot(): HostSnapshot {
+  return {
+    appVersion: "0.1.0",
+    os: "windows",
+    architecture: "x86_64",
+    protocolVersion: 1,
+    session: {
+      phase: "idle",
+      transport: "No active transport",
+      peerName: null,
+      lastError: null,
+      configuredWidth: null,
+      configuredHeight: null,
+      configuredFps: null,
+    },
+    telemetry: {
+      framesProduced: 0,
+      framesPresented: 0,
+      framesDropped: 0,
+      framesSuperseded: 0,
+      actualFps: 0,
+      p50LatencyMs: null,
+      p95LatencyMs: null,
+      queueDepth: 0,
+      uptimeMs: 0,
+    },
+    platform: {
+      captureBackend: "Windows Graphics Capture",
+      encoderStatus: "Native encoder status is available in the desktop app",
+      usbLinkState: "ready",
+      usbStatus:
+        "Connect Android by USB, enable USB tethering, and enter the address and one-time code shown by the app.",
+      capturePermission: "granted",
+      virtualDisplay: {
+        state: "ready",
+        detail: "LadoFlow virtual display is ready to enable in the desktop app.",
+        serviceInstalled: true,
+        serviceState: "stopped",
+        enabled: false,
+        deviceInstanceId: null,
+        lastError: null,
+        generation: 0,
+      },
+      displays: [
+        {
+          id: "preview-ladoflow-display",
+          name: "LadoFlow Extended Display",
+          width: 1920,
+          height: 1080,
+          primary: false,
+          virtualDisplay: true,
+        },
+        {
+          id: "preview-main-display",
+          name: "Main display",
+          width: 2560,
+          height: 1440,
+          primary: true,
+          virtualDisplay: false,
+        },
+      ],
+    },
+  };
+}
 
 function getElement(id: string): HTMLElement {
   const element = document.getElementById(id);
@@ -190,6 +267,14 @@ function getSelect(id: string): HTMLSelectElement {
   const element = getElement(id);
   if (!(element instanceof HTMLSelectElement)) {
     throw new Error(`#${id} is not a select`);
+  }
+  return element;
+}
+
+function getInput(id: string): HTMLInputElement {
+  const element = getElement(id);
+  if (!(element instanceof HTMLInputElement)) {
+    throw new Error(`#${id} is not an input`);
   }
   return element;
 }
@@ -214,7 +299,13 @@ function setBadge(element: HTMLElement, label: string, tone: "idle" | "good" | "
   element.className = `badge badge--${tone}`;
 }
 
-function sessionPresentation(phase: SessionPhase, isUsbSession: boolean) {
+function sessionPresentation(
+  phase: SessionPhase,
+  transport: string,
+  wiredReady: boolean,
+) {
+  const isWiredSession = transport.startsWith("Android");
+  const isTetherSession = transport.includes("USB tether");
   switch (phase) {
     case "negotiating":
       return {
@@ -224,10 +315,10 @@ function sessionPresentation(phase: SessionPhase, isUsbSession: boolean) {
         tone: "warn" as const,
       };
     case "streaming":
-      return isUsbSession
+      return isWiredSession
         ? {
-            title: "USB H.264 stream is live",
-            copy: "The selected Windows display is captured on the GPU, hardware-encoded as H.264 Main, and paced over the ordered USB link.",
+            title: `${isTetherSession ? "USB tether" : "Direct USB"} H.264 stream is live`,
+            copy: "The selected Windows display is GPU-captured, hardware-encoded as H.264 Main, and paced over the authenticated wired link.",
             label: "Streaming",
             tone: "good" as const,
           }
@@ -239,7 +330,7 @@ function sessionPresentation(phase: SessionPhase, isUsbSession: boolean) {
           };
     case "connected":
       return {
-        title: "USB display negotiated",
+        title: "Wired display negotiated",
         copy: "The host and Android display agreed on LDFL and H.264 Main settings. The Windows hardware encoder is preparing the first access-unit batch.",
         label: "Connected",
         tone: "good" as const,
@@ -260,6 +351,14 @@ function sessionPresentation(phase: SessionPhase, isUsbSession: boolean) {
       };
     case "stopped":
     case "idle":
+      if (wiredReady) {
+        return {
+          title: "Android is authenticated",
+          copy: "Choose the extended display and stream settings, then start the wired session. Pairing stays local and no account is required.",
+          label: "Ready",
+          tone: "good" as const,
+        };
+      }
       return {
         title: "Ready for a nearby screen",
         copy: "Start the deterministic loopback to validate negotiation, transport, pacing, and telemetry before attaching a physical device.",
@@ -326,14 +425,19 @@ function renderDisplays(displays: DisplaySource[], disabled: boolean) {
 function render(snapshot: HostSnapshot) {
   lastSnapshot = snapshot;
   const usbConnected = snapshot.platform.usbLinkState === "connected";
-  const isUsbSession = snapshot.session.transport.includes("Android Open Accessory");
-  const presentation = sessionPresentation(snapshot.session.phase, isUsbSession);
+  const isWiredSession = snapshot.session.transport.startsWith("Android");
+  const isTetherSession = snapshot.session.transport.includes("USB tether");
+  const presentation = sessionPresentation(
+    snapshot.session.phase,
+    snapshot.session.transport,
+    usbConnected,
+  );
   const isRunning =
     snapshot.session.phase === "streaming" ||
     snapshot.session.phase === "connected" ||
     snapshot.session.phase === "negotiating" ||
     snapshot.session.phase === "recovering";
-  const usbMode = usbConnected || (isUsbSession && isRunning);
+  const usbMode = usbConnected || (isWiredSession && isRunning);
 
   elements.appVersion.textContent = `LadoFlow ${snapshot.appVersion}`;
   elements.hostPlatform.textContent = formatPlatform(snapshot);
@@ -341,13 +445,15 @@ function render(snapshot: HostSnapshot) {
   elements.protocolVersion.textContent = `LDFL v${snapshot.protocolVersion}`;
   elements.sessionTitle.textContent = presentation.title;
   elements.sessionCopy.textContent = snapshot.session.lastError ?? presentation.copy;
-  elements.start.textContent = usbMode ? "Start USB stream" : "Start loopback";
-  elements.setupTitle.textContent = usbMode ? "USB screen stream" : "Synthetic stream";
+  elements.start.textContent = usbMode ? "Start wired stream" : "Start loopback";
+  elements.setupTitle.textContent = usbMode ? "Wired screen stream" : "Synthetic stream";
   elements.mediaMode.textContent = usbMode
     ? "GPU capture · hardware H.264 Main"
     : "Codec-neutral synthetic";
   elements.transportMode.textContent = usbMode
-    ? "Android Open Accessory USB"
+    ? isTetherSession
+      ? "Authenticated USB tether TCP"
+      : "Android Open Accessory USB"
     : "In-memory duplex";
   setBadge(elements.sessionBadge, presentation.label, presentation.tone);
   elements.linkPath.classList.toggle(
@@ -399,9 +505,24 @@ function render(snapshot: HostSnapshot) {
   elements.prepareAndroidUsb.hidden = snapshot.os !== "windows" || usbMode;
   elements.prepareAndroidUsb.disabled =
     busy || isRunning || snapshot.platform.usbLinkState === "connecting";
-  elements.disconnectAndroidUsb.hidden = snapshot.os !== "windows" || !usbConnected;
+  elements.directUsbNote.hidden = snapshot.os !== "windows" || usbMode;
+  elements.tetherPairingForm.hidden = usbMode;
+  elements.tetherEndpoint.disabled = busy || isRunning;
+  elements.tetherToken.disabled = busy || isRunning;
+  elements.pairAndroidTether.disabled = busy || isRunning;
+  elements.disconnectAndroidUsb.hidden = !usbConnected;
   elements.disconnectAndroidUsb.disabled = busy;
   renderDisplays(snapshot.platform.displays, busy || isRunning);
+
+  if (!nativeBridgeAvailable) {
+    elements.start.disabled = true;
+    elements.runCaptureProbe.disabled = true;
+    elements.enableVirtualDisplay.disabled = true;
+    elements.disableVirtualDisplay.disabled = true;
+    elements.prepareAndroidUsb.disabled = true;
+    elements.pairAndroidTether.disabled = true;
+    elements.disconnectAndroidUsb.disabled = true;
+  }
 
   if (isRunning && pollingHandle === undefined) {
     pollingHandle = window.setInterval(() => void refreshSnapshot(false), 750);
@@ -422,6 +543,11 @@ function clearError() {
 }
 
 async function refreshSnapshot(showFailure = true) {
+  if (!nativeBridgeAvailable) {
+    render(browserPreviewSnapshot());
+    clearError();
+    return;
+  }
   try {
     const snapshot = await invoke<HostSnapshot>("get_host_snapshot");
     render(snapshot);
@@ -447,6 +573,9 @@ async function runAction(action: () => Promise<HostSnapshot>) {
   elements.enableVirtualDisplay.disabled = true;
   elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.pairAndroidTether.disabled = true;
+  elements.tetherEndpoint.disabled = true;
+  elements.tetherToken.disabled = true;
   elements.disconnectAndroidUsb.disabled = true;
   clearError();
   try {
@@ -481,6 +610,9 @@ async function runCaptureProbe() {
   elements.enableVirtualDisplay.disabled = true;
   elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.pairAndroidTether.disabled = true;
+  elements.tetherEndpoint.disabled = true;
+  elements.tetherToken.disabled = true;
   elements.disconnectAndroidUsb.disabled = true;
   elements.runCaptureProbe.textContent = "Capturing for 0.75 s…";
   elements.start.disabled = true;
@@ -523,6 +655,13 @@ function renderUsbProbe(report: UsbAccessoryProbeReport) {
   elements.usbProbeResult.textContent = `${protocol} ready: ${device}, interface ${report.interfaceNumber ?? "?"}, ${endpoints}, max packet ${report.maxPacketSize ?? "?"} bytes. ${report.detail}`;
 }
 
+function renderTetherPairing(report: TetherPairingReport) {
+  elements.tetherPairingResult.hidden = false;
+  elements.tetherPairingResult.className =
+    "capture-probe-result capture-probe-result--good";
+  elements.tetherPairingResult.textContent = report.detail;
+}
+
 function hexByte(value: number): string {
   return `0x${value.toString(16).padStart(2, "0")}`;
 }
@@ -552,6 +691,9 @@ async function changeVirtualDisplay(enable: boolean): Promise<VirtualDisplayActi
   elements.enableVirtualDisplay.disabled = true;
   elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.pairAndroidTether.disabled = true;
+  elements.tetherEndpoint.disabled = true;
+  elements.tetherToken.disabled = true;
   elements.disconnectAndroidUsb.disabled = true;
   elements.runCaptureProbe.disabled = true;
   elements.start.disabled = true;
@@ -579,6 +721,9 @@ async function prepareAndroidUsb() {
   busy = true;
   const idleLabel = elements.prepareAndroidUsb.textContent;
   elements.prepareAndroidUsb.disabled = true;
+  elements.pairAndroidTether.disabled = true;
+  elements.tetherEndpoint.disabled = true;
+  elements.tetherToken.disabled = true;
   elements.disconnectAndroidUsb.disabled = true;
   elements.prepareAndroidUsb.textContent = "Preparing Android USB…";
   elements.start.disabled = true;
@@ -609,6 +754,61 @@ async function prepareAndroidUsb() {
   }
 }
 
+async function pairAndroidTether() {
+  if (busy) return;
+  const endpoint = elements.tetherEndpoint.value.trim();
+  let token = elements.tetherToken.value.trim();
+  if (endpoint.length === 0) {
+    showError("Enter the Android address shown by the app.");
+    elements.tetherEndpoint.focus();
+    return;
+  }
+  if (token.replace(/[ -]/g, "").length !== 16) {
+    showError("The one-time pairing code must contain 16 letters or digits.");
+    elements.tetherToken.focus();
+    return;
+  }
+
+  busy = true;
+  const idleLabel = elements.pairAndroidTether.textContent;
+  elements.pairAndroidTether.textContent = "Authenticating USB tether…";
+  elements.pairAndroidTether.disabled = true;
+  elements.tetherEndpoint.disabled = true;
+  elements.tetherToken.disabled = true;
+  elements.tetherToken.value = "";
+  elements.prepareAndroidUsb.disabled = true;
+  elements.disconnectAndroidUsb.disabled = true;
+  elements.start.disabled = true;
+  elements.stop.disabled = true;
+  elements.runCaptureProbe.disabled = true;
+  elements.enableVirtualDisplay.disabled = true;
+  elements.disableVirtualDisplay.disabled = true;
+  elements.tetherPairingResult.hidden = true;
+  clearError();
+  let enableExtendedDisplay = false;
+
+  try {
+    const report = await invoke<TetherPairingReport>("pair_android_tether", {
+      request: { endpoint, token },
+    });
+    renderTetherPairing(report);
+    enableExtendedDisplay =
+      lastSnapshot?.os === "windows" &&
+      lastSnapshot.platform.virtualDisplay.serviceInstalled &&
+      !lastSnapshot.platform.virtualDisplay.enabled;
+  } catch (error) {
+    showError(error);
+  } finally {
+    token = "";
+    busy = false;
+    elements.pairAndroidTether.textContent = idleLabel;
+    await refreshSnapshot(false);
+  }
+  if (enableExtendedDisplay) {
+    await changeVirtualDisplay(true);
+  }
+}
+
 async function startSession() {
   if (busy) return;
   const shouldEnableVirtualDisplay =
@@ -624,6 +824,13 @@ async function startSession() {
       displayId: selectedDisplayId,
     }),
   );
+}
+
+async function disconnectWiredDisplay() {
+  await runAction(() => invoke<HostSnapshot>("disconnect_android_usb"));
+  elements.tetherToken.value = "";
+  elements.tetherPairingResult.hidden = true;
+  elements.usbProbeResult.hidden = true;
 }
 
 elements.start.addEventListener("click", () => {
@@ -644,8 +851,22 @@ elements.runCaptureProbe.addEventListener("click", () => void runCaptureProbe())
 elements.enableVirtualDisplay.addEventListener("click", () => void changeVirtualDisplay(true));
 elements.disableVirtualDisplay.addEventListener("click", () => void changeVirtualDisplay(false));
 elements.prepareAndroidUsb.addEventListener("click", () => void prepareAndroidUsb());
+elements.pairAndroidTether.addEventListener("click", () => void pairAndroidTether());
+elements.tetherToken.addEventListener("input", () => {
+  const symbols = elements.tetherToken.value
+    .toUpperCase()
+    .replace(/[ -]/g, "")
+    .slice(0, 16);
+  elements.tetherToken.value = symbols.match(/.{1,4}/g)?.join("-") ?? "";
+});
+elements.tetherToken.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void pairAndroidTether();
+  }
+});
 elements.disconnectAndroidUsb.addEventListener("click", () => {
-  void runAction(() => invoke<HostSnapshot>("disconnect_android_usb"));
+  void disconnectWiredDisplay();
 });
 
 document.querySelectorAll<HTMLButtonElement>("[data-fps]").forEach((button) => {

@@ -43,12 +43,14 @@ body {
 }
 
 button,
-select {
+select,
+input {
   font: inherit;
 }
 
 button:focus-visible,
 select:focus-visible,
+input:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 3px;
@@ -502,6 +504,15 @@ h2 {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.button--ghost {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 9px;
+  border: 1px solid var(--line-strong);
+  color: #91a8ae;
+  background: rgba(255, 255, 255, 0.018);
+}
+
 .field-label {
   display: block;
   margin: 17px 0 8px;
@@ -513,12 +524,45 @@ h2 {
 }
 
 .field-control,
+.text-control,
 .segmented-control {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
   color: #c6d5d9;
   background: #0a191f;
+}
+
+.text-control {
+  height: 41px;
+  padding: 0 12px;
+  outline: 0;
+  font-size: 12px;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.text-control:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+.text-control:focus {
+  border-color: rgba(33, 213, 219, 0.48);
+  background: #0b1c22;
+  box-shadow: 0 0 0 3px rgba(33, 213, 219, 0.08);
+}
+
+.text-control:disabled {
+  opacity: 0.48;
+}
+
+.text-control::placeholder {
+  color: #496068;
+}
+
+.text-control--token {
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .field-control {
@@ -743,6 +787,22 @@ h2 {
 
 .usb-readiness .eyebrow {
   margin-bottom: 0.45rem;
+}
+
+.tether-pairing-form {
+  display: grid;
+  margin-top: 18px;
+}
+
+.tether-pairing-form .field-label:first-child {
+  margin-top: 0;
+}
+
+.field-help {
+  margin: 9px 1px 0;
+  color: #60777f;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .capture-probe-result--good {

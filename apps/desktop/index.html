@@ -213,17 +213,59 @@
             </div>
 
             <div class="usb-readiness">
-              <p class="eyebrow">ANDROID USB</p>
+              <p class="eyebrow">ANDROID WIRED DISPLAY</p>
               <p id="usb-status" class="platform-copy">
-                Detecting Android Open Accessory host support.
+                Connect Android by USB, enable USB tethering, then enter the address and one-time
+                code shown by LadoFlow on Android.
               </p>
+              <div id="tether-pairing-form" class="tether-pairing-form">
+                <label class="field-label" for="tether-endpoint">Android address</label>
+                <input
+                  id="tether-endpoint"
+                  class="text-control"
+                  type="text"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  placeholder="192.168.42.129:49231"
+                />
+                <label class="field-label" for="tether-token">One-time pairing code</label>
+                <input
+                  id="tether-token"
+                  class="text-control text-control--token"
+                  type="password"
+                  inputmode="text"
+                  autocomplete="off"
+                  autocapitalize="characters"
+                  spellcheck="false"
+                  maxlength="19"
+                  placeholder="XXXX-XXXX-XXXX-XXXX"
+                />
+                <p class="field-help">
+                  Local only. The code is never saved or sent across the connection.
+                </p>
+                <button id="pair-android-tether" class="button button--secondary" type="button">
+                  Pair USB tether
+                </button>
+              </div>
+              <p
+                id="tether-pairing-result"
+                class="capture-probe-result"
+                aria-live="polite"
+                hidden
+              ></p>
               <button id="prepare-android-usb" class="button button--secondary" type="button" hidden>
-                Connect Android USB
+                Try direct USB (experimental)
               </button>
               <button id="disconnect-android-usb" class="button button--ghost" type="button" hidden>
-                Disconnect Android USB
+                Disconnect wired display
               </button>
               <p id="usb-probe-result" class="capture-probe-result" aria-live="polite" hidden></p>
+              <p id="direct-usb-note" class="field-help" hidden>
+                Direct Android Open Accessory mode can require a compatible Windows USB driver.
+                USB tethering above is the reliable default and does not replace the phone driver.
+              </p>
             </div>
           </article>
 

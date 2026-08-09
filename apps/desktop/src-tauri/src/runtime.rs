@@ -327,6 +327,21 @@ impl DesktopRuntime {
         drop(self.lock_tether_connection().take());
         let (connection, report) = pair_tether_connection(request)?;
         *self.lock_tether_connection() = Some(connection);
+        let mut shared = self.lock_shared();
+        shared.phase = SessionPhaseView::Idle;
+        shared.session = None;
+        shared.config = None;
+        shared.transport = TETHER_TRANSPORT_NAME;
+        shared.peer_name = None;
+        shared.last_error = None;
+        shared.started_at = None;
+        shared.latency = LatencyAggregator::new(LATENCY_WINDOW);
+        shared.frames_produced = 0;
+        shared.frames_presented = 0;
+        shared.frames_dropped = 0;
+        shared.frames_superseded = 0;
+        shared.queue_depth = 0;
+        shared.sent_video_ordinals.clear();
         Ok(report)
     }
 
@@ -530,7 +545,13 @@ impl DesktopRuntime {
 
         if let Some((state, detail)) = self.usb_accessory.runtime_status() {
             platform.usb_link_state = state;
-            platform.usb_status = detail;
+            platform.usb_status = format!(
+                "USB tethering is available without replacing the phone driver. Direct USB status: {detail}"
+            );
+        } else {
+            platform.usb_link_state = crate::platform::UsbLinkState::Ready;
+            "USB tethering is ready for an Android address and one-time code."
+                .clone_into(&mut platform.usb_status);
         }
         platform
     }

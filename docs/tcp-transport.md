@@ -133,11 +133,38 @@ The Rust tests assert these exact values and independently exercise both roles
 over a real loopback socket. Successful pairing leaves the next byte untouched,
 so the existing LDFL magic can follow the 224-byte preface immediately.
 
+## Desktop integration status
+
+The desktop now exposes a bounded manual composition path around the transport
+primitive:
+
+- accept a numeric IPv4 address with an optional port and default to `49231`;
+- reject public, multicast, unspecified, IPv6, and hostname destinations;
+- allow private, carrier-grade NAT, link-local, and loopback IPv4 only;
+- cap TCP connection and pairing I/O at three seconds each;
+- zeroize the Rust token input and parsed token without logging either value;
+- retain the authenticated socket between **Pair** and **Start** without
+  retaining the pairing token;
+- move that socket into the existing negotiation, native-capture, H.264,
+  input, telemetry, cancellation, and stop lifecycle;
+- expose tether state in the desktop snapshot without presenting direct AOA as
+  the default Windows path.
+
+The desktop UI uses a password input with autocomplete disabled, clears it
+before awaiting the native command, and keeps direct Android Open Accessory
+mode explicitly labelled experimental. A normal-browser preview uses read-only
+sample status and never attempts native commands; the packaged Tauri app always
+uses the real Rust snapshot.
+
+Loopback socket tests prove mutual authentication and confirm that a mismatched
+token is rejected without echoing it in the returned error. This is still not a
+claim of physical Windows-to-Android cable interoperability.
+
 ## Remaining product work
 
 - implement the Android listener as a foreground, user-visible display action;
-- implement bounded Windows USB-tether route discovery plus manual address entry;
-- integrate TCP selection, status, cancellation, and reconnect into the desktop UI;
+- implement bounded Windows USB-tether default-gateway discovery;
+- add a session-bound resumption policy before automatic tether reconnect;
 - prove Windows-to-Android LDFL negotiation over a physical tether cable;
 - record sustained bitrate, frame pacing, latency, cable removal, and recovery;
 - add authenticated encryption before general LAN discovery is enabled.
