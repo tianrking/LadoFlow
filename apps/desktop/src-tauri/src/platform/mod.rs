@@ -27,11 +27,24 @@ pub enum CapturePermission {
     Unsupported,
 }
 
+// Each target constructs only the states supported by its native adapter.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsbLinkState {
+    Unsupported,
+    Ready,
+    Connecting,
+    Connected,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformStatus {
     pub capture_backend: String,
     pub encoder_status: String,
+    pub usb_link_state: UsbLinkState,
     pub usb_status: String,
     pub capture_permission: CapturePermission,
     pub virtual_display_status: String,
@@ -101,8 +114,32 @@ pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    collect_status, prepare_android_accessory, probe_screen_capture, request_capture_access,
+    UsbAccessoryManager, collect_status, probe_screen_capture, request_capture_access,
 };
+
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug, Default)]
+pub struct UsbAccessoryManager;
+
+#[cfg(not(target_os = "windows"))]
+impl UsbAccessoryManager {
+    #[must_use]
+    pub fn prepare(&self) -> UsbAccessoryProbeReport {
+        UsbAccessoryProbeReport::failed(format!(
+            "Android Open Accessory preparation is not implemented for {} yet",
+            std::env::consts::OS
+        ))
+    }
+
+    pub fn disconnect(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn runtime_status(&self) -> Option<(UsbLinkState, String)> {
+        None
+    }
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[must_use]
@@ -119,21 +156,13 @@ pub fn collect_status() -> PlatformStatus {
             "Native encoder capability probe is not implemented for {}",
             std::env::consts::OS
         ),
+        usb_link_state: UsbLinkState::Unsupported,
         usb_status: "Android Open Accessory host is not implemented on this platform yet."
             .to_owned(),
         capture_permission: CapturePermission::Unsupported,
         virtual_display_status: "Native virtual-display adapter is not installed yet.".to_owned(),
         displays: Vec::new(),
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-#[must_use]
-pub fn prepare_android_accessory() -> UsbAccessoryProbeReport {
-    UsbAccessoryProbeReport::failed(format!(
-        "Android Open Accessory preparation is not implemented for {} yet",
-        std::env::consts::OS
-    ))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

@@ -40,12 +40,16 @@ it is not yet the long-running capture-to-encoder path or a virtual display.
 The Windows host also includes an explicit Android Open Accessory preparation
 path. Shared Rust code validates the exact AOA protocol query, six terminated
 identity strings, mode-switch request, and short-transfer failures. The Windows
-adapter then waits for Google accessory re-enumeration and proves that the app
-interface and both bulk endpoints can be claimed. Read-only status never sends
-vendor requests; only the user's **Prepare Android USB** action attempts a mode
-switch. This has not yet been verified with a physical Android device, and
-Windows may need a signed WinUSB-compatible binding before libusb can access the
-interface.
+adapter then waits for Google accessory re-enumeration, claims the app interface,
+and keeps it owned by a cancellable duplex worker. Outbound frames are selected
+control-first, short writes resume without interleaving frames, every write is
+capped at 64 KiB, and inbound chunks feed the bounded LDFL incremental decoder.
+Read-only status never sends vendor requests; only the user's **Connect Android
+USB** action attempts a mode switch. **Disconnect Android USB** joins the worker
+and releases the interface. The current loopback media producer is not yet wired
+into this worker. This path has not been verified with a physical Android device,
+and Windows may need a signed WinUSB-compatible binding before libusb can access
+the interface.
 
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).

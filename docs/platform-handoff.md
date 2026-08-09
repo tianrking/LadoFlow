@@ -116,11 +116,14 @@ claim the app interface before reporting readiness.
    unsupported version zero, identity bounds, and short writes.
 3. [x] Add explicit Windows mode switching, re-enumeration timeout, descriptor
    inspection, and bulk-interface claim diagnostics.
-4. [ ] Keep the claimed handle open in a cancellable duplex session, carrying
-   unchanged LDFL bytes with writes capped at 64 KiB.
-5. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
+4. [x] Keep the claimed handle open in a cancellable duplex worker, prioritize
+   control between complete frames, cap writes at 64 KiB, retry short writes,
+   and feed 64 KiB reads into the bounded LDFL incremental decoder.
+5. [ ] Compose the worker's bounded host endpoint into the production runtime
+   so negotiated control and encoded video actually use the USB link.
+6. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
    physical Android device.
-6. [ ] Replace development driver setup with a signed, installer-managed
+7. [ ] Replace development driver setup with a signed, installer-managed
    WinUSB-compatible binding and verify rollback/uninstall.
 
 The AOA request and product-ID values follow the

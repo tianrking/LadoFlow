@@ -5,26 +5,117 @@
 //! on unrelated USB devices would be an inappropriate background side effect.
 
 use std::{
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
+use ladoflow_protocol::{
+    FRAME_HEADER_LEN, FrameDecoder, MAX_CONTROL_PAYLOAD, MAX_MEDIA_PAYLOAD, MessageType,
+};
 use ladoflow_transport::{
-    AccessoryControlIo, AccessoryIdentity, AoaNegotiationError, is_aoa_app_accessory,
-    negotiate_accessory_mode,
+    AccessoryControlIo, AccessoryIdentity, AoaNegotiationError, Channel, ConnectionState,
+    LoopbackConfig, LoopbackEndpoint, Packet, PacketTransport, QueueLimits, is_aoa_app_accessory,
+    loopback_pair, negotiate_accessory_mode,
 };
 use rusb::{ConfigDescriptor, Context, Device, DeviceHandle, Direction, TransferType, UsbContext};
 
-use super::super::UsbAccessoryProbeReport;
+use super::super::{UsbAccessoryProbeReport, UsbLinkState};
 
 const REENUMERATION_TIMEOUT: Duration = Duration::from_secs(8);
 const REENUMERATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const BULK_TRANSFER_BYTES: usize = 64 * 1_024;
+const BULK_READ_TIMEOUT: Duration = Duration::from_millis(2);
+const BULK_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+const USB_QUEUE_CONFIG: LoopbackConfig = LoopbackConfig::new(
+    valid_queue_limits(
+        64,
+        4 * 1_024 * 1_024,
+        FRAME_HEADER_LEN + MAX_CONTROL_PAYLOAD,
+    ),
+    valid_queue_limits(3, 32 * 1_024 * 1_024, FRAME_HEADER_LEN + MAX_MEDIA_PAYLOAD),
+);
 
+const fn valid_queue_limits(
+    max_packets: usize,
+    max_queued_bytes: usize,
+    max_packet_bytes: usize,
+) -> QueueLimits {
+    match QueueLimits::new(max_packets, max_queued_bytes, max_packet_bytes) {
+        Ok(limits) => limits,
+        Err(_) => panic!("built-in Android USB queue limits must be valid"),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct BulkEndpoints {
     interface: u8,
     input: u8,
     output: u8,
     max_packet_size: u16,
+}
+
+#[derive(Debug, Clone)]
+struct LinkStatus {
+    phase: UsbLinkState,
+    detail: String,
+    bytes_read: u64,
+    bytes_written: u64,
+    frames_read: u64,
+    frames_written: u64,
+}
+
+impl Default for LinkStatus {
+    fn default() -> Self {
+        Self {
+            phase: UsbLinkState::Ready,
+            detail: "Android USB has not been connected in this app session".to_owned(),
+            bytes_read: 0,
+            bytes_written: 0,
+            frames_read: 0,
+            frames_written: 0,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AccessorySession {
+    host_endpoint: LoopbackEndpoint,
+    cancel: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl AccessorySession {
+    fn stop(mut self) -> Result<(), String> {
+        self.cancel.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| "Android USB bulk worker panicked while stopping".to_owned())?;
+        }
+        Ok(())
+    }
+
+    fn is_connected(&self) -> bool {
+        self.host_endpoint.connection_state() == ConnectionState::Connected
+    }
+}
+
+#[derive(Debug)]
+struct OpenedAccessory {
+    report: UsbAccessoryProbeReport,
+    handle: DeviceHandle<Context>,
+    endpoints: BulkEndpoints,
+}
+
+#[derive(Debug, Default)]
+pub struct UsbAccessoryManager {
+    session: Mutex<Option<AccessorySession>>,
+    status: Arc<Mutex<LinkStatus>>,
 }
 
 struct ControlHandle<'a>(&'a DeviceHandle<Context>);
@@ -59,6 +150,123 @@ impl AccessoryControlIo for ControlHandle<'_> {
     }
 }
 
+impl UsbAccessoryManager {
+    pub fn prepare(&self) -> UsbAccessoryProbeReport {
+        if let Err(error) = self.stop_active_session() {
+            return UsbAccessoryProbeReport::failed(error);
+        }
+        self.replace_status(LinkStatus {
+            phase: UsbLinkState::Connecting,
+            detail: "Negotiating Android Open Accessory mode".to_owned(),
+            ..LinkStatus::default()
+        });
+
+        let opened = match open_android_accessory() {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.replace_status(LinkStatus {
+                    phase: UsbLinkState::Failed,
+                    detail: error.clone(),
+                    ..LinkStatus::default()
+                });
+                return UsbAccessoryProbeReport::failed(error);
+            }
+        };
+        let mut report = opened.report.clone();
+        match start_bulk_session(opened, &self.status) {
+            Ok(session) => {
+                *self.lock_session() = Some(session);
+                "connected".clone_into(&mut report.state);
+                "AOA interface remains claimed; the cancellable duplex bulk session is running with bounded LDFL framing"
+                    .clone_into(&mut report.detail);
+                report
+            }
+            Err(error) => {
+                self.replace_status(LinkStatus {
+                    phase: UsbLinkState::Failed,
+                    detail: error.clone(),
+                    ..LinkStatus::default()
+                });
+                UsbAccessoryProbeReport::failed(error)
+            }
+        }
+    }
+
+    pub fn disconnect(&self) -> Result<(), String> {
+        self.stop_active_session()?;
+        let stopped_status = self.lock_status().clone();
+        if stopped_status.phase == UsbLinkState::Failed {
+            return Err(stopped_status.detail);
+        }
+        self.replace_status(LinkStatus {
+            phase: UsbLinkState::Ready,
+            detail: "Android USB session disconnected by the user".to_owned(),
+            ..LinkStatus::default()
+        });
+        Ok(())
+    }
+
+    pub fn runtime_status(&self) -> Option<(UsbLinkState, String)> {
+        let session_connected = self
+            .lock_session()
+            .as_ref()
+            .is_some_and(AccessorySession::is_connected);
+        let status = self.lock_status().clone();
+        if status.phase == UsbLinkState::Ready
+            && status.detail == "Android USB has not been connected in this app session"
+        {
+            return None;
+        }
+        let detail = if session_connected && status.phase == UsbLinkState::Connected {
+            format!(
+                "{}; received {} frames / {} bytes, sent {} frames / {} bytes",
+                status.detail,
+                status.frames_read,
+                status.bytes_read,
+                status.frames_written,
+                status.bytes_written
+            )
+        } else {
+            status.detail
+        };
+        Some((status.phase, detail))
+    }
+
+    fn stop_active_session(&self) -> Result<(), String> {
+        let session = self.lock_session().take();
+        session.map_or(Ok(()), AccessorySession::stop)
+    }
+
+    fn lock_session(&self) -> MutexGuard<'_, Option<AccessorySession>> {
+        self.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_status(&self) -> MutexGuard<'_, LinkStatus> {
+        self.status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn replace_status(&self, status: LinkStatus) {
+        *self.lock_status() = status;
+    }
+}
+
+impl Drop for UsbAccessoryManager {
+    fn drop(&mut self) {
+        let session = self
+            .session
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(session) = session {
+            let _result = session.stop();
+        }
+    }
+}
+
 pub(super) fn collect_status() -> String {
     let context = match Context::new() {
         Ok(context) => context,
@@ -78,18 +286,11 @@ pub(super) fn collect_status() -> String {
     }
 }
 
-pub(super) fn prepare_android_accessory() -> UsbAccessoryProbeReport {
-    match prepare_android_accessory_inner() {
-        Ok(report) => report,
-        Err(error) => UsbAccessoryProbeReport::failed(error),
-    }
-}
-
-fn prepare_android_accessory_inner() -> Result<UsbAccessoryProbeReport, String> {
+fn open_android_accessory() -> Result<OpenedAccessory, String> {
     let context =
         Context::new().map_err(|error| format!("failed to initialize libusb: {error}"))?;
     if let Some(device) = find_accessory_devices(&context)?.into_iter().next() {
-        return verify_accessory(&device, None);
+        return open_accessory(&device, None);
     }
 
     let identity = AccessoryIdentity::ladoflow(host_description(), env!("CARGO_PKG_VERSION"), "")
@@ -138,7 +339,7 @@ fn prepare_android_accessory_inner() -> Result<UsbAccessoryProbeReport, String> 
                 let started = Instant::now();
                 while started.elapsed() < REENUMERATION_TIMEOUT {
                     if let Some(accessory) = find_accessory_devices(&context)?.into_iter().next() {
-                        return verify_accessory(&accessory, Some(protocol.get()));
+                        return open_accessory(&accessory, Some(protocol.get()));
                     }
                     thread::sleep(REENUMERATION_POLL_INTERVAL);
                 }
@@ -186,10 +387,10 @@ fn find_accessory_devices(context: &Context) -> Result<Vec<Device<Context>>, Str
     Ok(accessories)
 }
 
-fn verify_accessory(
+fn open_accessory(
     device: &Device<Context>,
     protocol_version: Option<u16>,
-) -> Result<UsbAccessoryProbeReport, String> {
+) -> Result<OpenedAccessory, String> {
     let descriptor = device
         .device_descriptor()
         .map_err(|error| format!("failed to read AOA descriptor: {error}"))?;
@@ -220,25 +421,193 @@ fn verify_accessory(
             endpoints.interface
         )
     })?;
-    handle
-        .release_interface(endpoints.interface)
-        .map_err(|error| format!("failed to release verified AOA interface: {error}"))?;
-
-    Ok(UsbAccessoryProbeReport {
-        passed: true,
-        state: "ready".to_owned(),
-        detail: "AOA app interface opened and its duplex bulk endpoints were claimed successfully"
-            .to_owned(),
-        protocol_version,
-        bus_number: Some(device.bus_number()),
-        device_address: Some(device.address()),
-        vendor_id: Some(descriptor.vendor_id()),
-        product_id: Some(descriptor.product_id()),
-        interface_number: Some(endpoints.interface),
-        input_endpoint: Some(endpoints.input),
-        output_endpoint: Some(endpoints.output),
-        max_packet_size: Some(endpoints.max_packet_size),
+    Ok(OpenedAccessory {
+        report: UsbAccessoryProbeReport {
+            passed: true,
+            state: "ready".to_owned(),
+            detail:
+                "AOA app interface opened and its duplex bulk endpoints were claimed successfully"
+                    .to_owned(),
+            protocol_version,
+            bus_number: Some(device.bus_number()),
+            device_address: Some(device.address()),
+            vendor_id: Some(descriptor.vendor_id()),
+            product_id: Some(descriptor.product_id()),
+            interface_number: Some(endpoints.interface),
+            input_endpoint: Some(endpoints.input),
+            output_endpoint: Some(endpoints.output),
+            max_packet_size: Some(endpoints.max_packet_size),
+        },
+        handle,
+        endpoints,
     })
+}
+
+fn start_bulk_session(
+    opened: OpenedAccessory,
+    status: &Arc<Mutex<LinkStatus>>,
+) -> Result<AccessorySession, String> {
+    let (host_endpoint, device_endpoint) = loopback_pair(USB_QUEUE_CONFIG);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    let worker_status = Arc::clone(status);
+    *lock_link_status(status) = LinkStatus {
+        phase: UsbLinkState::Connected,
+        detail: "Android Open Accessory interface is claimed and the duplex bulk worker is active"
+            .to_owned(),
+        ..LinkStatus::default()
+    };
+    let worker = thread::Builder::new()
+        .name("ladoflow-windows-usb".to_owned())
+        .spawn(move || {
+            run_bulk_session(
+                opened.handle,
+                opened.endpoints,
+                device_endpoint,
+                &worker_cancel,
+                &worker_status,
+            );
+        })
+        .map_err(|error| format!("failed to start Android USB bulk worker: {error}"))?;
+    Ok(AccessorySession {
+        host_endpoint,
+        cancel,
+        worker: Some(worker),
+    })
+}
+
+fn run_bulk_session(
+    handle: DeviceHandle<Context>,
+    endpoints: BulkEndpoints,
+    mut device_endpoint: LoopbackEndpoint,
+    cancel: &AtomicBool,
+    status: &Arc<Mutex<LinkStatus>>,
+) {
+    let result = pump_bulk_stream(&handle, endpoints, &mut device_endpoint, cancel, status);
+    let _discarded = device_endpoint.disconnect();
+    let release_result = handle.release_interface(endpoints.interface);
+
+    let mut link_status = lock_link_status(status);
+    if cancel.load(Ordering::Acquire) {
+        if let Err(release_error) = release_result {
+            link_status.phase = UsbLinkState::Failed;
+            link_status.detail =
+                format!("Android USB stopped, but releasing its interface failed: {release_error}");
+        } else {
+            link_status.phase = UsbLinkState::Ready;
+            "Android USB bulk session stopped cleanly".clone_into(&mut link_status.detail);
+        }
+    } else {
+        link_status.phase = UsbLinkState::Failed;
+        link_status.detail = match (result, release_result) {
+            (Err(error), Err(release_error)) => {
+                format!("{error}; releasing USB interface also failed: {release_error}")
+            }
+            (Err(error), Ok(())) => error,
+            (Ok(()), Err(release_error)) => {
+                format!("Android USB worker ended; interface release failed: {release_error}")
+            }
+            (Ok(()), Ok(())) => "Android USB bulk worker ended unexpectedly".to_owned(),
+        };
+    }
+    drop(handle);
+}
+
+fn pump_bulk_stream(
+    handle: &DeviceHandle<Context>,
+    endpoints: BulkEndpoints,
+    device_endpoint: &mut LoopbackEndpoint,
+    cancel: &AtomicBool,
+    status: &Arc<Mutex<LinkStatus>>,
+) -> Result<(), String> {
+    let mut decoder = FrameDecoder::new();
+    let mut read_buffer = vec![0_u8; BULK_TRANSFER_BYTES];
+
+    while !cancel.load(Ordering::Acquire) {
+        if let Some(packet) = next_outgoing_packet(device_endpoint)? {
+            let written = write_chunked(packet.payload(), |chunk| {
+                handle.write_bulk(endpoints.output, chunk, BULK_WRITE_TIMEOUT)
+            })?;
+            let mut link_status = lock_link_status(status);
+            link_status.bytes_written = link_status
+                .bytes_written
+                .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+            link_status.frames_written = link_status.frames_written.saturating_add(1);
+        }
+
+        match handle.read_bulk(endpoints.input, &mut read_buffer, BULK_READ_TIMEOUT) {
+            Ok(0) | Err(rusb::Error::Timeout) => {}
+            Ok(count) => {
+                let frames = decoder
+                    .push(&read_buffer[..count])
+                    .map_err(|error| format!("Android USB LDFL stream is invalid: {error}"))?;
+                let frame_count = frames.len();
+                for frame in frames {
+                    let packet = if frame.header().kind() == MessageType::VideoFrame {
+                        Packet::media(frame.encode())
+                    } else {
+                        Packet::control(frame.encode())
+                    };
+                    device_endpoint.try_send(packet).map_err(|error| {
+                        format!("Android USB inbound queue rejected a frame: {error}")
+                    })?;
+                }
+                let mut link_status = lock_link_status(status);
+                link_status.bytes_read = link_status
+                    .bytes_read
+                    .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+                link_status.frames_read = link_status
+                    .frames_read
+                    .saturating_add(u64::try_from(frame_count).unwrap_or(u64::MAX));
+            }
+            Err(error) => return Err(format!("Android USB bulk read failed: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn next_outgoing_packet(endpoint: &mut LoopbackEndpoint) -> Result<Option<Packet>, String> {
+    if let Some(control) = endpoint
+        .try_receive(Channel::Control)
+        .map_err(|error| format!("Android USB outgoing control queue failed: {error}"))?
+    {
+        return Ok(Some(control));
+    }
+    endpoint
+        .try_receive(Channel::Media)
+        .map_err(|error| format!("Android USB outgoing media queue failed: {error}"))
+}
+
+fn write_chunked<E: std::fmt::Display>(
+    payload: &[u8],
+    mut write: impl FnMut(&[u8]) -> Result<usize, E>,
+) -> Result<usize, String> {
+    let mut offset = 0_usize;
+    while offset < payload.len() {
+        let end = offset
+            .saturating_add(BULK_TRANSFER_BYTES)
+            .min(payload.len());
+        let chunk = &payload[offset..end];
+        let written =
+            write(chunk).map_err(|error| format!("Android USB bulk write failed: {error}"))?;
+        if written == 0 {
+            return Err("Android USB bulk write made no progress".to_owned());
+        }
+        if written > chunk.len() {
+            return Err(format!(
+                "Android USB bulk write reported {written} bytes for a {}-byte chunk",
+                chunk.len()
+            ));
+        }
+        offset += written;
+    }
+    Ok(offset)
+}
+
+fn lock_link_status(status: &Arc<Mutex<LinkStatus>>) -> MutexGuard<'_, LinkStatus> {
+    status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn find_bulk_endpoints(configuration: &ConfigDescriptor) -> Option<BulkEndpoints> {
@@ -289,7 +658,12 @@ fn host_description() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_android_probe_candidate;
+    use ladoflow_transport::{Packet, PacketTransport, loopback_pair};
+
+    use super::{
+        BULK_TRANSFER_BYTES, FRAME_HEADER_LEN, MAX_CONTROL_PAYLOAD, MAX_MEDIA_PAYLOAD,
+        USB_QUEUE_CONFIG, is_android_probe_candidate, next_outgoing_packet, write_chunked,
+    };
 
     #[test]
     fn background_probe_candidates_exclude_device_classes_with_other_roles() {
@@ -298,5 +672,63 @@ mod tests {
         assert!(!is_android_probe_candidate(0x18d1, 0x2d00, 0x00));
         assert!(!is_android_probe_candidate(0x1234, 0x5678, 0x03));
         assert!(!is_android_probe_candidate(0, 0, 0));
+    }
+
+    #[test]
+    fn chunked_writer_caps_transfers_and_retries_short_writes() {
+        let payload = (0..(BULK_TRANSFER_BYTES * 2 + 31))
+            .map(|value| u8::try_from(value % 251).expect("value is bounded"))
+            .collect::<Vec<_>>();
+        let mut transferred = Vec::new();
+        let mut largest_request = 0_usize;
+
+        let written = write_chunked(&payload, |chunk| -> Result<usize, &'static str> {
+            largest_request = largest_request.max(chunk.len());
+            let accepted = chunk.len().min(7_919);
+            transferred.extend_from_slice(&chunk[..accepted]);
+            Ok(accepted)
+        })
+        .expect("all short writes are retried");
+
+        assert_eq!(written, payload.len());
+        assert_eq!(transferred, payload);
+        assert!(largest_request <= BULK_TRANSFER_BYTES);
+        assert!(write_chunked(b"blocked", |_chunk| Ok::<usize, &str>(0)).is_err());
+    }
+
+    #[test]
+    fn usb_queues_accept_the_protocols_largest_encoded_frames() {
+        assert_eq!(
+            USB_QUEUE_CONFIG.control_limits().max_packet_bytes(),
+            FRAME_HEADER_LEN + MAX_CONTROL_PAYLOAD
+        );
+        assert_eq!(
+            USB_QUEUE_CONFIG.media_limits().max_packet_bytes(),
+            FRAME_HEADER_LEN + MAX_MEDIA_PAYLOAD
+        );
+    }
+
+    #[test]
+    fn outgoing_control_frames_are_selected_before_media_frames() {
+        let (mut host, mut device) = loopback_pair(USB_QUEUE_CONFIG);
+        host.try_send(Packet::media(b"video"))
+            .expect("media queue accepts frame");
+        host.try_send(Packet::control(b"control"))
+            .expect("control queue accepts frame");
+
+        assert_eq!(
+            next_outgoing_packet(&mut device)
+                .expect("queue remains connected")
+                .expect("control frame is available")
+                .payload(),
+            b"control"
+        );
+        assert_eq!(
+            next_outgoing_packet(&mut device)
+                .expect("queue remains connected")
+                .expect("media frame is available")
+                .payload(),
+            b"video"
+        );
     }
 }

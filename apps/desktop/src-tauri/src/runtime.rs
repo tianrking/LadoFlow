@@ -22,7 +22,9 @@ use ladoflow_transport::LoopbackConfig as TransportLoopbackConfig;
 use ladoflow_transport::{Channel, Packet, PacketTransport, SupersessionKey, loopback_pair};
 use serde::{Deserialize, Serialize};
 
-use crate::platform::{PlatformStatus, collect_status};
+use crate::platform::{
+    PlatformStatus, UsbAccessoryManager, UsbAccessoryProbeReport, collect_status,
+};
 
 const LATENCY_WINDOW: NonZeroUsize = NonZeroUsize::new(240).expect("240 is non-zero");
 const MEDIA_STREAM_KEY: SupersessionKey = SupersessionKey::new(1);
@@ -190,11 +192,21 @@ struct Worker {
 pub struct DesktopRuntime {
     shared: Arc<Mutex<SharedState>>,
     worker: Mutex<Option<Worker>>,
+    usb_accessory: UsbAccessoryManager,
 }
 
 impl DesktopRuntime {
     pub fn snapshot(&self) -> HostSnapshot {
-        self.lock_shared().snapshot(collect_status())
+        self.lock_shared().snapshot(self.platform_status())
+    }
+
+    pub fn prepare_android_usb(&self) -> UsbAccessoryProbeReport {
+        self.usb_accessory.prepare()
+    }
+
+    pub fn disconnect_android_usb(&self) -> Result<HostSnapshot, String> {
+        self.usb_accessory.disconnect()?;
+        Ok(self.snapshot())
     }
 
     pub fn start(&self, config: LoopbackConfig) -> Result<HostSnapshot, String> {
@@ -253,9 +265,18 @@ impl DesktopRuntime {
             session.close();
         }
         shared.phase = SessionPhaseView::Stopped;
-        let snapshot = shared.snapshot(collect_status());
+        let snapshot = shared.snapshot(self.platform_status());
         drop(shared);
         Ok(snapshot)
+    }
+
+    fn platform_status(&self) -> PlatformStatus {
+        let mut platform = collect_status();
+        if let Some((state, detail)) = self.usb_accessory.runtime_status() {
+            platform.usb_link_state = state;
+            platform.usb_status = detail;
+        }
+        platform
     }
 
     fn lock_shared(&self) -> MutexGuard<'_, SharedState> {

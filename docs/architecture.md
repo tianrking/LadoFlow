@@ -46,8 +46,9 @@ flowchart TB
 
 The first executable slice deliberately substitutes synthetic media and an
 in-memory data link for unfinished production capture and mobile presentation.
-The AOA USB control plane is now implemented separately, but it does not carry
-the runtime's media stream yet:
+The AOA USB control plane and persistent bulk-session boundary are now
+implemented separately, but the desktop runtime does not enqueue its media
+stream into that session yet:
 
 ```mermaid
 flowchart LR
@@ -63,9 +64,9 @@ flowchart LR
 
 This path exercises the shared contracts end to end without pretending to be a
 usable second display. Native frame sources will replace `SyntheticFrameProducer`;
-The verified AOA mode-switch and endpoint-claim path will replace the loopback
-pair with a bounded bulk-transfer session; neither USB nor a later LAN adapter
-should change session or wire semantics.
+The verified AOA mode-switch and bounded bulk-transfer worker will replace the
+loopback pair after its host endpoint is composed into the runtime; neither USB
+nor a later LAN adapter should change session or wire semantics.
 
 The implementation lives in these ownership boundaries:
 

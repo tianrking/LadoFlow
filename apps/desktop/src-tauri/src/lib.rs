@@ -2,6 +2,8 @@ mod commands;
 mod platform;
 mod runtime;
 
+use std::sync::Arc;
+
 use runtime::DesktopRuntime;
 
 /// Launch the native `LadoFlow` desktop host.
@@ -13,7 +15,7 @@ use runtime::DesktopRuntime;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(DesktopRuntime::default())
+        .manage(Arc::new(DesktopRuntime::default()))
         .invoke_handler(tauri::generate_handler![
             commands::get_host_snapshot,
             commands::start_loopback,
@@ -21,6 +23,7 @@ pub fn run() {
             commands::request_screen_capture_access,
             commands::run_screen_capture_probe,
             commands::prepare_android_usb,
+            commands::disconnect_android_usb,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LadoFlow");

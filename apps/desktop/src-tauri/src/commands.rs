@@ -2,36 +2,37 @@
 // supplies lightweight handles rather than transferring managed state.
 #![allow(clippy::needless_pass_by_value)]
 
+use std::sync::Arc;
+
 use tauri::State;
 
 use crate::{
     platform::{
-        CaptureProbeReport, UsbAccessoryProbeReport, prepare_android_accessory,
-        probe_screen_capture, request_capture_access,
+        CaptureProbeReport, UsbAccessoryProbeReport, probe_screen_capture, request_capture_access,
     },
     runtime::{DesktopRuntime, HostSnapshot, LoopbackConfig},
 };
 
 #[tauri::command]
-pub fn get_host_snapshot(runtime: State<'_, DesktopRuntime>) -> HostSnapshot {
+pub fn get_host_snapshot(runtime: State<'_, Arc<DesktopRuntime>>) -> HostSnapshot {
     runtime.snapshot()
 }
 
 #[tauri::command]
 pub fn start_loopback(
-    runtime: State<'_, DesktopRuntime>,
+    runtime: State<'_, Arc<DesktopRuntime>>,
     config: LoopbackConfig,
 ) -> Result<HostSnapshot, String> {
     runtime.start(config)
 }
 
 #[tauri::command]
-pub fn stop_loopback(runtime: State<'_, DesktopRuntime>) -> Result<HostSnapshot, String> {
+pub fn stop_loopback(runtime: State<'_, Arc<DesktopRuntime>>) -> Result<HostSnapshot, String> {
     runtime.stop()
 }
 
 #[tauri::command]
-pub fn request_screen_capture_access(runtime: State<'_, DesktopRuntime>) -> HostSnapshot {
+pub fn request_screen_capture_access(runtime: State<'_, Arc<DesktopRuntime>>) -> HostSnapshot {
     let _status = request_capture_access();
     runtime.snapshot()
 }
@@ -47,8 +48,18 @@ pub async fn run_screen_capture_probe(
 }
 
 #[tauri::command]
-pub async fn prepare_android_usb() -> Result<UsbAccessoryProbeReport, String> {
-    tauri::async_runtime::spawn_blocking(prepare_android_accessory)
+pub async fn prepare_android_usb(
+    runtime: State<'_, Arc<DesktopRuntime>>,
+) -> Result<UsbAccessoryProbeReport, String> {
+    let runtime = Arc::clone(runtime.inner());
+    tauri::async_runtime::spawn_blocking(move || runtime.prepare_android_usb())
         .await
         .map_err(|error| format!("Android USB preparation worker failed: {error}"))
+}
+
+#[tauri::command]
+pub fn disconnect_android_usb(
+    runtime: State<'_, Arc<DesktopRuntime>>,
+) -> Result<HostSnapshot, String> {
+    runtime.disconnect_android_usb()
 }

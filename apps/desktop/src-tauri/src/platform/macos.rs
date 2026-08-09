@@ -13,7 +13,7 @@ use screencapturekit::{
     },
 };
 
-use super::{CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus};
+use super::{CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus, UsbLinkState};
 
 const CAPTURE_PROBE_DURATION: Duration = Duration::from_millis(750);
 const CAPTURE_QUEUE_DEPTH: u32 = 3;
@@ -31,6 +31,7 @@ pub fn collect_status() -> PlatformStatus {
         capture_backend: "ScreenCaptureKit native frame probe with CoreGraphics discovery"
             .to_owned(),
         encoder_status: "VideoToolbox encoder capability probe is not implemented yet".to_owned(),
+        usb_link_state: UsbLinkState::Unsupported,
         usb_status: "Android Open Accessory host is not implemented on macOS yet".to_owned(),
         capture_permission: permission,
         virtual_display_status:

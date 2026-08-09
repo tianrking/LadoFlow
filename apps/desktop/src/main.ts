@@ -45,6 +45,7 @@ interface HostSnapshot {
   platform: {
     captureBackend: string;
     encoderStatus: string;
+    usbLinkState: "unsupported" | "ready" | "connecting" | "connected" | "failed";
     usbStatus: string;
     capturePermission: CapturePermission;
     virtualDisplayStatus: string;
@@ -109,6 +110,7 @@ const elements = {
   runCaptureProbe: getButton("run-capture-probe"),
   captureProbeResult: getElement("capture-probe-result"),
   prepareAndroidUsb: getButton("prepare-android-usb"),
+  disconnectAndroidUsb: getButton("disconnect-android-usb"),
   usbStatus: getElement("usb-status"),
   usbProbeResult: getElement("usb-probe-result"),
   resolution: getSelect("resolution"),
@@ -277,8 +279,11 @@ function render(snapshot: HostSnapshot) {
   const hasNativeCaptureProbe = snapshot.os === "macos" || snapshot.os === "windows";
   elements.runCaptureProbe.hidden = !hasNativeCaptureProbe || !permissionGranted;
   elements.runCaptureProbe.disabled = busy;
-  elements.prepareAndroidUsb.hidden = snapshot.os !== "windows";
-  elements.prepareAndroidUsb.disabled = busy;
+  const usbConnected = snapshot.platform.usbLinkState === "connected";
+  elements.prepareAndroidUsb.hidden = snapshot.os !== "windows" || usbConnected;
+  elements.prepareAndroidUsb.disabled = busy || snapshot.platform.usbLinkState === "connecting";
+  elements.disconnectAndroidUsb.hidden = snapshot.os !== "windows" || !usbConnected;
+  elements.disconnectAndroidUsb.disabled = busy;
   selectedDisplayId =
     snapshot.platform.displays.find((display) => display.primary)?.id ??
     snapshot.platform.displays[0]?.id ??
@@ -327,6 +332,7 @@ async function runAction(action: () => Promise<HostSnapshot>) {
   elements.requestPermission.disabled = true;
   elements.runCaptureProbe.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.disconnectAndroidUsb.disabled = true;
   clearError();
   try {
     const snapshot = await action();
@@ -358,6 +364,7 @@ async function runCaptureProbe() {
   const idleLabel = elements.runCaptureProbe.textContent;
   elements.runCaptureProbe.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.disconnectAndroidUsb.disabled = true;
   elements.runCaptureProbe.textContent = "Capturing for 0.75 s…";
   elements.start.disabled = true;
   elements.stop.disabled = true;
@@ -412,6 +419,7 @@ async function prepareAndroidUsb() {
   busy = true;
   const idleLabel = elements.prepareAndroidUsb.textContent;
   elements.prepareAndroidUsb.disabled = true;
+  elements.disconnectAndroidUsb.disabled = true;
   elements.prepareAndroidUsb.textContent = "Preparing Android USB…";
   elements.start.disabled = true;
   elements.stop.disabled = true;
@@ -446,6 +454,9 @@ elements.requestPermission.addEventListener("click", () => {
 
 elements.runCaptureProbe.addEventListener("click", () => void runCaptureProbe());
 elements.prepareAndroidUsb.addEventListener("click", () => void prepareAndroidUsb());
+elements.disconnectAndroidUsb.addEventListener("click", () => {
+  void runAction(() => invoke<HostSnapshot>("disconnect_android_usb"));
+});
 
 document.querySelectorAll<HTMLButtonElement>("[data-fps]").forEach((button) => {
   button.addEventListener("click", () => {
