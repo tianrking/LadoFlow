@@ -9,11 +9,16 @@ import dev.ladoflow.display.ui.LadoFlowApp
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val transport = (application as LadoFlowApplication).usbAccessoryTransport
-        transport.handleIntent(intent)
+        val ladoFlowApplication = application as LadoFlowApplication
+        ladoFlowApplication.usbAccessoryTransport.handleIntent(intent)
         enableEdgeToEdge()
         setContent {
-            LadoFlowApp(usbTransport = transport)
+            LadoFlowApp(
+                displaySession = ladoFlowApplication.displaySession,
+                usbTransport = ladoFlowApplication.usbAccessoryTransport,
+                startupFailure = ladoFlowApplication.startupFailure,
+                capabilityEvidence = ladoFlowApplication.capabilityEvidence,
+            )
         }
     }
 

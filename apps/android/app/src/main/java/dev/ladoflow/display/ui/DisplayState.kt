@@ -21,7 +21,7 @@ enum class QualityMode {
 data class DisplayPreferences(
     val qualityMode: QualityMode = QualityMode.Automatic,
     val keepScreenAwake: Boolean = true,
-    val showRemotePointer: Boolean = true,
+    val showRemotePointer: Boolean = false,
     val showDiagnosticsOverlay: Boolean = false,
 )
 
@@ -33,7 +33,7 @@ data class StreamConfiguration(
 )
 
 data class StreamMetrics(
-    val renderedFrames: Long = 0,
+    val releasedToSurfaceFrames: Long = 0,
     val droppedFrames: Long = 0,
     val queueDepth: Int = 0,
     val decodeLatencyMillis: Double? = null,
@@ -66,7 +66,20 @@ sealed interface DisplayEvent {
 
     data class UsbLinkConnected(val accessoryName: String) : DisplayEvent
 
-    data class StreamStarted(val configuration: StreamConfiguration) : DisplayEvent
+    data class StreamStarted(
+        val configuration: StreamConfiguration,
+        val hostName: String? = null,
+    ) : DisplayEvent
+
+    data class StreamConfigured(
+        val configuration: StreamConfiguration,
+        val hostName: String? = null,
+    ) : DisplayEvent
+
+    data class DecoderSurfaceReady(
+        val configuration: StreamConfiguration,
+        val hostName: String? = null,
+    ) : DisplayEvent
 
     data class MetricsUpdated(val metrics: StreamMetrics) : DisplayEvent
 
@@ -93,6 +106,9 @@ object DisplayStateMachine {
         DisplayEvent.RetryRequested -> state.copy(
             stage = ConnectionStage.WaitingForAccessory,
             detail = "Waiting for a USB accessory connection.",
+            hostName = null,
+            stream = null,
+            metrics = StreamMetrics(),
             recoveryAttempt = 0,
             lastError = null,
         )
@@ -100,6 +116,8 @@ object DisplayStateMachine {
         is DisplayEvent.AccessoryAttached -> state.copy(
             stage = ConnectionStage.WaitingForPermission,
             accessoryName = event.name,
+            hostName = null,
+            stream = null,
             detail = "Approve LadoFlow when Android asks to open this USB accessory.",
             recoveryAttempt = 0,
             lastError = null,
@@ -125,7 +143,8 @@ object DisplayStateMachine {
         is DisplayEvent.PairingCompleted -> state.copy(
             stage = ConnectionStage.Connected,
             hostName = event.hostName,
-            detail = "Connected securely on the local USB link. Waiting for a display stream.",
+            detail = "Connected on the local USB link. Waiting for a display configuration.",
+            stream = null,
             recoveryAttempt = 0,
             lastError = null,
         )
@@ -140,8 +159,27 @@ object DisplayStateMachine {
 
         is DisplayEvent.StreamStarted -> state.copy(
             stage = ConnectionStage.Displaying,
+            hostName = event.hostName ?: state.hostName,
             stream = event.configuration,
             detail = "The host is sending this extended display.",
+            recoveryAttempt = 0,
+            lastError = null,
+        )
+
+        is DisplayEvent.StreamConfigured -> state.copy(
+            stage = ConnectionStage.Connected,
+            hostName = event.hostName ?: state.hostName,
+            stream = event.configuration,
+            detail = "Display configuration accepted. Preparing the decoder Surface.",
+            recoveryAttempt = 0,
+            lastError = null,
+        )
+
+        is DisplayEvent.DecoderSurfaceReady -> state.copy(
+            stage = ConnectionStage.Connected,
+            hostName = event.hostName ?: state.hostName,
+            stream = event.configuration,
+            detail = "Decoder Surface ready. Waiting for the first H.264 keyframe output.",
             recoveryAttempt = 0,
             lastError = null,
         )
@@ -172,6 +210,7 @@ object DisplayStateMachine {
         is DisplayEvent.Failed -> state.copy(
             stage = ConnectionStage.Error,
             detail = "LadoFlow could not continue this display session.",
+            stream = null,
             lastError = event.reason,
         )
 

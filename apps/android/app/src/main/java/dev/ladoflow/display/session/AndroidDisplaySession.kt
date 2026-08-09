@@ -96,6 +96,7 @@ data class AndroidDisplaySessionMetrics(
     val outputsReleasedToSurface: Long = 0,
     val droppedVideoFrames: Long = 0,
     val droppedInputEvents: Long = 0,
+    val queueDepth: Int = 0,
 )
 
 /** Owns LDFL v1 negotiation and composes transport, decoder, Surface, and reverse input. */
@@ -145,6 +146,7 @@ class AndroidDisplaySession(
         scope.launch { transport.frames.collect(::handleInboundFrame) }
         scope.launch { decoder.events.collect(::handleDecoderEvent) }
         scope.launch { decoder.state.collect(::handleDecoderState) }
+        scope.launch { decoder.queueDepth.collect { updateQueueDepthMetric() } }
         if (periodicReportsEnabled) {
             scope.launch { telemetryLoop() }
             scope.launch { pingLoop() }
@@ -613,6 +615,7 @@ class AndroidDisplaySession(
                 pendingSurfaceFrames.clear()
                 pendingSurfaceFrames.addLast(frame)
                 awaitingSurfaceKeyframe = false
+                updateQueueDepthMetric()
             }
 
             awaitingSurfaceKeyframe -> recordDroppedVideo()
@@ -623,9 +626,13 @@ class AndroidDisplaySession(
                 )
                 pendingSurfaceFrames.clear()
                 awaitingSurfaceKeyframe = true
+                updateQueueDepthMetric()
             }
 
-            else -> pendingSurfaceFrames.addLast(frame)
+            else -> {
+                pendingSurfaceFrames.addLast(frame)
+                updateQueueDepthMetric()
+            }
         }
     }
 
@@ -635,9 +642,11 @@ class AndroidDisplaySession(
                 recordDroppedVideo()
                 pendingSurfaceFrames.clear()
                 awaitingSurfaceKeyframe = true
+                updateQueueDepthMetric()
                 return
             }
         }
+        updateQueueDepthMetric()
     }
 
     private suspend fun rejectProtocol(
@@ -649,10 +658,7 @@ class AndroidDisplaySession(
         failed = true
         surfaceReady = false
         pendingSurfaceFrames.clear()
-        inboundSequences = MonotonicSequenceValidator()
-        mutableMetrics.value = AndroidDisplaySessionMetrics()
-        lastReleasedFrameId = 0uL
-        pingToken = 0uL
+        updateQueueDepthMetric()
         inputController.updateViewport(null)
         decoder.reset(diagnostic)
         mutableState.value = AndroidDisplaySessionState.Failed(diagnostic, retryable = true)
@@ -663,6 +669,9 @@ class AndroidDisplaySession(
         activeConfiguration = null
         negotiated = false
         failed = true
+        surfaceReady = false
+        pendingSurfaceFrames.clear()
+        updateQueueDepthMetric()
         inputController.updateViewport(null)
         decoder.reset(reason)
         mutableState.value = AndroidDisplaySessionState.Failed(reason, retryable = false)
@@ -680,6 +689,10 @@ class AndroidDisplaySession(
         surfaceReady = false
         awaitingSurfaceKeyframe = true
         pendingSurfaceFrames.clear()
+        inboundSequences = MonotonicSequenceValidator()
+        mutableMetrics.value = AndroidDisplaySessionMetrics()
+        lastReleasedFrameId = 0uL
+        pingToken = 0uL
         inputController.updateViewport(null)
         if (mutableState.value is AndroidDisplaySessionState.Configured ||
             mutableState.value is AndroidDisplaySessionState.Connected ||
@@ -702,6 +715,14 @@ class AndroidDisplaySession(
         )
     }
 
+    private fun updateQueueDepthMetric() {
+        val depth = (pendingSurfaceFrames.size + decoder.queueDepth.value)
+            .coerceAtMost(MAX_TELEMETRY_QUEUE_DEPTH)
+        if (mutableMetrics.value.queueDepth != depth) {
+            mutableMetrics.value = mutableMetrics.value.copy(queueDepth = depth)
+        }
+    }
+
     private suspend fun telemetryLoop() {
         while (!closed.get()) {
             delay(1_000)
@@ -713,13 +734,15 @@ class AndroidDisplaySession(
         if (!negotiated || failed || activeConfiguration == null) return false
         val snapshot = mutableMetrics.value
         val currentOutbound = outbound ?: return false
+        val queueDepth = (pendingSurfaceFrames.size + decoder.queueDepth.value)
+            .coerceAtMost(MAX_TELEMETRY_QUEUE_DEPTH)
+        if (snapshot.queueDepth != queueDepth) updateQueueDepthMetric()
         currentOutbound.sendControl(
             TelemetryPayload(
                 sampleTimestampMicros = monotonicMicros(),
                 frameId = lastReleasedFrameId,
                 timings = StageTimings(0u, 0u, 0u, 0u, 0u),
-                queueDepth = (pendingSurfaceFrames.size + decoder.queueDepth.value)
-                    .coerceAtMost(MAX_TELEMETRY_QUEUE_DEPTH),
+                queueDepth = queueDepth,
                 lossPartsPerMillion = 0u,
                 droppedFrames = snapshot.droppedVideoFrames
                     .coerceAtMost(UInt.MAX_VALUE.toLong()).toUInt(),

@@ -76,13 +76,20 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.ladoflow.display.input.AndroidInputController
+import dev.ladoflow.display.media.AndroidDisplayCapabilityEvidence
+import dev.ladoflow.display.media.MediaCodecSurface
+import dev.ladoflow.display.media.VideoDecoder
+import dev.ladoflow.display.protocol.DisplayConfigPayload
+import dev.ladoflow.display.session.AndroidDisplaySession
+import dev.ladoflow.display.session.AndroidDisplaySessionMetrics
+import dev.ladoflow.display.session.AndroidDisplaySessionState
 import dev.ladoflow.display.ui.theme.LadoCoral
 import dev.ladoflow.display.ui.theme.LadoCyan
 import dev.ladoflow.display.ui.theme.LadoFlowTheme
 import dev.ladoflow.display.ui.theme.LadoMuted
 import dev.ladoflow.display.ui.theme.LadoSurfaceRaised
 import dev.ladoflow.display.transport.usb.AndroidUsbAccessoryTransport
-import dev.ladoflow.display.transport.usb.UsbTransportState
 
 private enum class Destination(
     val label: String,
@@ -96,15 +103,27 @@ private enum class Destination(
 @Composable
 fun LadoFlowApp(
     displayViewModel: DisplayViewModel = viewModel(),
+    displaySession: AndroidDisplaySession? = null,
     usbTransport: AndroidUsbAccessoryTransport? = null,
+    startupFailure: String? = null,
+    capabilityEvidence: AndroidDisplayCapabilityEvidence? = null,
 ) {
     val state by displayViewModel.state.collectAsStateWithLifecycle()
     val view = LocalView.current
+    val session = displaySession
 
-    if (usbTransport != null) {
-        val transportState by usbTransport.state.collectAsStateWithLifecycle()
-        LaunchedEffect(transportState) {
-            displayViewModel.accept(transportState.toDisplayEvent())
+    if (session != null) {
+        val sessionState by session.state.collectAsStateWithLifecycle()
+        val sessionMetrics by session.metrics.collectAsStateWithLifecycle()
+        LaunchedEffect(sessionState) {
+            displayViewModel.accept(sessionState.toDisplayEvent())
+        }
+        LaunchedEffect(sessionMetrics) {
+            displayViewModel.accept(DisplayEvent.MetricsUpdated(sessionMetrics.toUiMetrics()))
+        }
+    } else if (startupFailure != null) {
+        LaunchedEffect(startupFailure) {
+            displayViewModel.accept(DisplayEvent.Failed(startupFailure))
         }
     }
 
@@ -116,32 +135,67 @@ fun LadoFlowApp(
 
     LadoFlowApp(
         state = state,
+        decoder = session?.decoder,
+        inputController = session?.inputController,
+        capabilityEvidence = capabilityEvidence,
         onEvent = { event ->
-            when (event) {
-                DisplayEvent.RetryRequested -> usbTransport?.retry()
-                DisplayEvent.Disconnected -> usbTransport?.disconnect()
-                else -> Unit
+            if (event == DisplayEvent.RetryRequested && startupFailure != null) {
+                displayViewModel.accept(DisplayEvent.Failed(startupFailure))
+            } else {
+                when (event) {
+                    DisplayEvent.RetryRequested -> session?.retry() ?: usbTransport?.retry()
+                    DisplayEvent.Disconnected -> session?.disconnect() ?: usbTransport?.disconnect()
+                    else -> Unit
+                }
+                displayViewModel.accept(event)
             }
-            displayViewModel.accept(event)
         },
     )
 }
 
-private fun UsbTransportState.toDisplayEvent(): DisplayEvent = when (this) {
-    UsbTransportState.Stopped -> DisplayEvent.TransportStopped
-    UsbTransportState.WaitingForAccessory -> DisplayEvent.RetryRequested
-    is UsbTransportState.AwaitingPermission -> DisplayEvent.AccessoryAttached(accessory.displayName)
-    is UsbTransportState.Opening -> DisplayEvent.PermissionGranted
-    is UsbTransportState.Connected -> DisplayEvent.UsbLinkConnected(accessory.displayName)
-    is UsbTransportState.Recovering -> DisplayEvent.RecoveryAttempted(attempt, reason)
-    is UsbTransportState.Error -> DisplayEvent.Failed(reason)
-    is UsbTransportState.Unsupported -> DisplayEvent.Failed(reason)
+private fun AndroidDisplaySessionState.toDisplayEvent(): DisplayEvent = when (this) {
+    AndroidDisplaySessionState.Stopped -> DisplayEvent.TransportStopped
+    AndroidDisplaySessionState.WaitingForAccessory -> DisplayEvent.RetryRequested
+    is AndroidDisplaySessionState.WaitingForPermission -> DisplayEvent.AccessoryAttached(accessoryName)
+    is AndroidDisplaySessionState.Handshaking -> DisplayEvent.UsbLinkConnected(accessoryName)
+    is AndroidDisplaySessionState.Ready -> DisplayEvent.PairingCompleted(hostName)
+    is AndroidDisplaySessionState.Configured -> DisplayEvent.StreamConfigured(
+        configuration.toUiConfiguration(),
+        hostName,
+    )
+    is AndroidDisplaySessionState.Connected -> DisplayEvent.DecoderSurfaceReady(
+        configuration.toUiConfiguration(),
+        hostName,
+    )
+    is AndroidDisplaySessionState.Displaying -> DisplayEvent.StreamStarted(
+        configuration.toUiConfiguration(),
+        hostName,
+    )
+    is AndroidDisplaySessionState.Recovering -> DisplayEvent.RecoveryAttempted(attempt, reason)
+    is AndroidDisplaySessionState.Failed -> DisplayEvent.Failed(reason)
+    is AndroidDisplaySessionState.Unsupported -> DisplayEvent.Failed(reason)
 }
+
+private fun DisplayConfigPayload.toUiConfiguration(): StreamConfiguration = StreamConfiguration(
+    width = width,
+    height = height,
+    refreshRateHz = ((refreshMillihz.toULong() + 500uL) / 1_000uL).toInt(),
+    codec = "H.264 Main",
+)
+
+private fun AndroidDisplaySessionMetrics.toUiMetrics(): StreamMetrics = StreamMetrics(
+    releasedToSurfaceFrames = outputsReleasedToSurface,
+    droppedFrames = droppedVideoFrames,
+    queueDepth = queueDepth,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun LadoFlowApp(
     state: DisplayUiState,
+    decoder: VideoDecoder? = null,
+    inputController: AndroidInputController? = null,
+    capabilityEvidence: AndroidDisplayCapabilityEvidence? = null,
     onEvent: (DisplayEvent) -> Unit,
 ) {
     var selectedName by rememberSaveable { mutableStateOf(Destination.Display.name) }
@@ -177,9 +231,14 @@ internal fun LadoFlowApp(
                             .fillMaxHeight(),
                     ) { destination ->
                         when (destination) {
-                            Destination.Display -> DisplayScreen(state, onEvent)
+                            Destination.Display -> DisplayScreen(
+                                state,
+                                decoder,
+                                inputController,
+                                onEvent,
+                            )
                             Destination.Settings -> SettingsScreen(state, onEvent)
-                            Destination.Diagnostics -> DiagnosticsScreen(state)
+                            Destination.Diagnostics -> DiagnosticsScreen(state, capabilityEvidence)
                         }
                     }
                 }
@@ -305,6 +364,8 @@ private fun DestinationRail(
 @Composable
 private fun DisplayScreen(
     state: DisplayUiState,
+    decoder: VideoDecoder?,
+    inputController: AndroidInputController?,
     onEvent: (DisplayEvent) -> Unit,
 ) {
     Box(
@@ -318,13 +379,50 @@ private fun DisplayScreen(
             modifier = Modifier.widthIn(max = 1040.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            if (state.stage == ConnectionStage.Displaying) {
-                DisplaySurfaceCard(state)
+            if (state.stream != null && decoder != null) {
+                DisplaySurfaceCard(state, decoder, inputController)
+                ActiveSessionControls(state, onEvent)
             } else {
                 ConnectionHero(state, onEvent)
             }
             ConnectionJourney(state.stage)
             PrivacyCard()
+        }
+    }
+}
+
+@Composable
+private fun ActiveSessionControls(
+    state: DisplayUiState,
+    onEvent: (DisplayEvent) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    state.hostName ?: "LadoFlow Host",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    state.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(onClick = { onEvent(DisplayEvent.Disconnected) }) {
+                Text("Disconnect")
+            }
         }
     }
 }
@@ -444,8 +542,12 @@ private fun StageOrb(stage: ConnectionStage) {
 }
 
 @Composable
-private fun DisplaySurfaceCard(state: DisplayUiState) {
-    val stream = state.stream
+private fun DisplaySurfaceCard(
+    state: DisplayUiState,
+    decoder: VideoDecoder,
+    inputController: AndroidInputController?,
+) {
+    val stream = requireNotNull(state.stream)
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.Black),
         shape = RoundedCornerShape(24.dp),
@@ -454,29 +556,42 @@ private fun DisplaySurfaceCard(state: DisplayUiState) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(stream?.let { it.width.toFloat() / it.height } ?: (16f / 9f))
+                .aspectRatio(stream.width.toFloat() / stream.height)
                 .background(Color.Black),
             contentAlignment = Alignment.Center,
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    Modifier
-                        .size(10.dp)
-                        .background(LadoCyan, CircleShape),
-                )
-                Spacer(Modifier.height(12.dp))
+            MediaCodecSurface(
+                decoder = decoder,
+                inputController = inputController,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            if (state.stage != ConnectionStage.Displaying) {
                 Text(
-                    text = "Display surface active",
+                    text = when (state.stage) {
+                        ConnectionStage.Recovering -> "Recovering decoder session"
+                        else -> "Surface ready · waiting for H.264 output"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     color = Color.White,
-                )
-                Text(
-                    text = stream?.let { "${it.width} × ${it.height} · ${it.refreshRateHz} Hz · ${it.codec}" }
-                        ?: "Waiting for stream configuration",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.66f),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                 )
             }
+
+            Text(
+                text = "${stream.width} × ${stream.height} · ${stream.refreshRateHz} Hz · ${stream.codec}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.82f),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(12.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+            )
 
             if (state.preferences.showDiagnosticsOverlay) {
                 Column(
@@ -662,19 +777,6 @@ private fun SettingsScreen(
             )
             HorizontalDivider(Modifier.padding(vertical = 10.dp))
             PreferenceToggle(
-                title = "Show remote pointer",
-                detail = "Render the host cursor when negotiated.",
-                checked = state.preferences.showRemotePointer,
-                onChecked = { value ->
-                    onEvent(
-                        DisplayEvent.PreferencesChanged(
-                            state.preferences.copy(showRemotePointer = value),
-                        ),
-                    )
-                },
-            )
-            HorizontalDivider(Modifier.padding(vertical = 10.dp))
-            PreferenceToggle(
                 title = "Diagnostics overlay",
                 detail = "Show queue, drop, and decode timing while displaying.",
                 checked = state.preferences.showDiagnosticsOverlay,
@@ -691,7 +793,10 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun DiagnosticsScreen(state: DisplayUiState) {
+private fun DiagnosticsScreen(
+    state: DisplayUiState,
+    capabilityEvidence: AndroidDisplayCapabilityEvidence?,
+) {
     ScreenColumn(
         title = "Diagnostics",
         subtitle = "Honest implementation status for this Android build.",
@@ -712,19 +817,28 @@ private fun DiagnosticsScreen(state: DisplayUiState) {
             )
             DiagnosticRow("Host", state.hostName ?: "Not connected")
             DiagnosticRow("Protocol", "LDFL v1 · frame and payload codec ready")
-            DiagnosticRow("Reverse input", "Touch · mouse · keyboard boundary ready")
+            DiagnosticRow("Reverse input", "Pointer · touch")
         }
         SettingsCard(title = "Decoder") {
-            DiagnosticRow("Primary codec", "H.264 / AVC")
-            DiagnosticRow("Backend", "MediaCodec Surface boundary ready · not device-verified")
-            DiagnosticRow("Rendered frames", state.metrics.renderedFrames.toString())
+            DiagnosticRow("Negotiated codec", "H.264 Main")
+            DiagnosticRow(
+                "Capability decoder",
+                capabilityEvidence?.decoderName ?: "Not available",
+            )
+            DiagnosticRow(
+                "Acceleration evidence",
+                capabilityEvidence?.hardwareAcceleration?.name ?: "Not queried",
+            )
+            DiagnosticRow("Released to Surface", state.metrics.releasedToSurfaceFrames.toString())
             DiagnosticRow("Dropped frames", state.metrics.droppedFrames.toString())
+            DiagnosticRow("Queue depth", state.metrics.queueDepth.toString())
         }
         SettingsCard(title = "Build boundary") {
             Text(
                 "This build includes the Compose UI, bounded LDFL v1 codec, and Android USB Accessory " +
                     "lifecycle/I/O boundary. The H.264 MediaCodec boundary validates Annex-B and waits " +
-                    "for SPS/PPS plus an LDFL keyframe. USB and decode remain unverified on a device.",
+                    "for SPS/PPS plus an LDFL keyframe. 未实机验证: USB and MediaCodec output have " +
+                    "not been verified on a physical Android device.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -888,7 +1002,7 @@ private fun DisplayingPreview() {
             stage = ConnectionStage.Displaying,
             hostName = "Studio PC",
             detail = "The host is sending this extended display.",
-            stream = StreamConfiguration(1920, 1080, 60, "H.264 High"),
+            stream = StreamConfiguration(1920, 1080, 60, "H.264 Main"),
         ),
         onEvent = {},
     )

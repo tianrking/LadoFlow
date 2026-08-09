@@ -11,7 +11,7 @@ class DisplayStateMachineTest {
             width = 1920,
             height = 1080,
             refreshRateHz = 60,
-            codec = "H.264 High",
+            codec = "H.264 Main",
         )
 
         val attached = DisplayStateMachine.reduce(
@@ -30,9 +30,22 @@ class DisplayStateMachineTest {
         assertEquals(ConnectionStage.Connected, connected.stage)
         assertEquals("Studio PC", connected.hostName)
 
-        val displaying = DisplayStateMachine.reduce(
+        val configured = DisplayStateMachine.reduce(
             connected,
-            DisplayEvent.StreamStarted(configuration),
+            DisplayEvent.StreamConfigured(configuration, "Studio PC"),
+        )
+        assertEquals(ConnectionStage.Connected, configured.stage)
+        assertEquals(configuration, configured.stream)
+
+        val surfaceReady = DisplayStateMachine.reduce(
+            configured,
+            DisplayEvent.DecoderSurfaceReady(configuration, "Studio PC"),
+        )
+        assertEquals(ConnectionStage.Connected, surfaceReady.stage)
+
+        val displaying = DisplayStateMachine.reduce(
+            surfaceReady,
+            DisplayEvent.StreamStarted(configuration, "Studio PC"),
         )
         assertEquals(ConnectionStage.Displaying, displaying.stage)
         assertEquals(configuration, displaying.stream)
@@ -72,7 +85,7 @@ class DisplayStateMachineTest {
         val active = DisplayUiState(
             stage = ConnectionStage.Displaying,
             hostName = "Workstation",
-            stream = StreamConfiguration(2560, 1600, 60, "H.264 High"),
+            stream = StreamConfiguration(2560, 1600, 60, "H.264 Main"),
             preferences = preferences,
         )
 
