@@ -171,6 +171,26 @@ function Resolve-SpectreSetting([string]$visualStudioPath) {
     return 'false'
 }
 
+function Resolve-WdkTaskVersion([string]$wdkRoot) {
+    $taskRoot = Join-Path $wdkRoot 'build\10.0.26100.0\bin'
+    $versions = Get-ChildItem -LiteralPath $taskRoot -File -Filter 'Microsoft.DriverKit.Build.Tasks.*.dll' `
+        -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            if ($_.Name -match '^Microsoft\.DriverKit\.Build\.Tasks\.(?<Version>\d+\.\d+)\.dll$') {
+                $Matches.Version
+            }
+        } |
+        Sort-Object { [version]$_ } -Descending
+    foreach ($version in $versions) {
+        $packageVerifier = Join-Path $taskRoot "Microsoft.DriverKit.Build.Tasks.PackageVerifier.$version.dll"
+        if (Test-Path -LiteralPath $packageVerifier) {
+            return $version
+        }
+    }
+
+    throw "The pinned WDK payload has no matching build-task and package-verifier assemblies in '$taskRoot'."
+}
+
 Restore-WdkPackages
 $visualStudio = Resolve-VisualStudio
 $vcTargets = Resolve-WdkVcTargets $visualStudio.VcTargets
@@ -178,6 +198,7 @@ $spectreSetting = Resolve-SpectreSetting $visualStudio.Installation
 
 $wdkRoot = Join-Path $packagesPath "$wdkPackageName\c"
 $wdkBin = Join-Path $wdkRoot 'bin\10.0.26100.0'
+$wdkTaskVersion = Resolve-WdkTaskVersion $wdkRoot
 $msbuildArguments = @(
     $solutionPath,
     '/m:1',
@@ -186,6 +207,11 @@ $msbuildArguments = @(
     "/p:Configuration=$Configuration",
     '/p:Platform=x64',
     '/p:Processor_Architecture=AMD64',
+    # VS 2026 can run this build with its current compiler and v180 targets,
+    # while the pinned WDK payload intentionally exposes versioned MSBuild
+    # tasks for VS 2022. Select the task assembly that actually ships instead
+    # of allowing MSBuild 18 to synthesize a nonexistent *.18.0.dll path.
+    "/p:VisualStudioVersion=$wdkTaskVersion",
     "/p:Driver_SpectreMitigation=$spectreSetting",
     "/p:SpectreMitigation=$spectreSetting",
     '/p:LadoFlowEnablePrefast=false',
