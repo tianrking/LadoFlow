@@ -275,7 +275,7 @@ impl Frame {
         Ok(Self { header, payload })
     }
 
-    /// Encode a typed control payload in a frame with its required kind.
+    /// Encode a typed payload in a frame with its required kind.
     ///
     /// # Errors
     ///
@@ -290,7 +290,7 @@ impl Frame {
         Self::new(P::KIND, flags, sequence, payload.encode()?)
     }
 
-    /// Decode the frame as a typed control payload after checking its kind.
+    /// Decode the frame as a typed payload after checking its kind.
     ///
     /// # Errors
     ///
