@@ -1,0 +1,11 @@
+{
+  "name": "ladoflow-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-platform workspace for LadoFlow",
+  "license": "MIT",
+  "scripts": {
+    "check:rust": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+  }
+}
+

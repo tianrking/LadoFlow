@@ -1,0 +1,133 @@
+<p align="center">
+  <img src="./assets/brand/ladoflow-mark-256.png" width="176" alt="LadoFlow logo">
+</p>
+
+<h1 align="center">LadoFlow</h1>
+
+<p align="center">
+  <strong>Use the screen beside you as a smooth, private second display.</strong>
+</p>
+
+<p align="center">
+  USB first · local only · no account · open source
+</p>
+
+<p align="center">
+  <a href="./README.md">English</a> ·
+  <a href="./README.es.md">Español</a> ·
+  <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/tianrking/LadoFlow/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tianrking/LadoFlow/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="./LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-0f172a.svg"></a>
+  <img alt="Status: pre-alpha" src="https://img.shields.io/badge/status-pre--alpha-f97316.svg">
+  <img alt="Transport: USB first" src="https://img.shields.io/badge/transport-USB%20first-06b6d4.svg">
+</p>
+
+> [!IMPORTANT]
+> LadoFlow is in **pre-alpha foundation work**. There is no usable second-display release yet. The table below distinguishes implemented foundations from planned platform support.
+
+## What LadoFlow is
+
+LadoFlow is building a local-first second-display system for:
+
+- Windows, macOS, and Linux hosts;
+- Android tablets and phones;
+- iPad and iPhone displays;
+- wired USB transport first, then trusted local-network transport;
+- hardware video encoding/decoding, touch and pointer input, and automatic reconnection.
+
+The long-term product promise is simple: install the host, open LadoFlow on a tablet, plug in a cable, and extend the desktop—without an account or a cloud relay.
+
+## Project status
+
+| Area | Current state | Intended result |
+| --- | --- | --- |
+| Shared wire protocol | Foundation in progress | Versioned control, media, input, and telemetry messages |
+| Windows host | Architecture only | Signed virtual display driver and desktop host |
+| macOS host | Architecture only | Native virtual-display adapter and notarized host |
+| Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
+| Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
+| iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
+| USB transport | Foundation in progress | Direct, authenticated device link |
+| Wi-Fi/LAN transport | Planned after USB | Explicitly paired local connection |
+
+No row above is a release claim. Follow the [roadmap](./docs/roadmap.md) and [GitHub milestones](https://github.com/tianrking/LadoFlow/milestones) for evidence-backed progress.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    OS["Virtual display adapter\nWindows · macOS · Linux"] --> CAP["Capture + damage tracking"]
+    CAP --> ENC["Hardware encoder"]
+    ENC --> CORE["LadoFlow Core\nprotocol · sessions · telemetry"]
+    CORE --> LINK["Transport abstraction\nUSB first · LAN later"]
+    LINK --> MOBILE["Native mobile display\nAndroid · iOS/iPadOS"]
+    MOBILE --> DEC["Hardware decoder + renderer"]
+    MOBILE --> INPUT["Touch · pointer · keyboard"]
+    INPUT --> CORE
+```
+
+Platform-specific display drivers and USB adapters remain native. Session state, wire framing, capability negotiation, and quality control live in the shared Rust core. Mobile presentation and hardware decoding stay native to Kotlin and Swift.
+
+Read the full [architecture](./docs/architecture.md) and [protocol principles](./docs/protocol.md).
+
+## Why the name?
+
+**Lado** means “side” or “beside” in Spanish; **flow** describes the low-friction movement of pixels and input between devices. Together, LadoFlow means *a display at your side that stays in your flow*.
+
+The logo uses two adjacent rounded screens joined by one continuous cyan path:
+
+- the large frame is the host computer;
+- the smaller frame is the tablet or phone;
+- the continuous path forms a subtle **L** and represents local transport;
+- cyan represents motion and responsiveness; coral marks the connected display endpoint;
+- the design contains no platform or third-party product marks.
+
+More detail and downloadable assets live in the [brand guide](./docs/brand.md).
+
+## Repository layout
+
+```text
+LadoFlow/
+├─ apps/                 # Desktop, Android, and Apple applications
+├─ crates/               # Shared Rust protocol, core, transport, and media crates
+├─ platform/             # Native virtual-display and OS integration components
+├─ assets/brand/         # Original logo assets
+├─ docs/                 # Architecture, protocol, roadmap, and development notes
+└─ .github/workflows/    # Reproducible validation
+```
+
+## Development principles
+
+1. **Measure before claiming.** Smoothness means captured latency, frame pacing, drops, and reconnect behavior—not a demo video.
+2. **Native where the platform demands it.** Drivers, codecs, rendering, USB integration, and input injection use native APIs.
+3. **Share only stable logic.** Protocol and session behavior are shared; platform UI is not forced into one abstraction.
+4. **Local by default.** No account, analytics, or cloud relay is required for the core product.
+5. **Small, testable commits.** Each milestone must include a repeatable validation path.
+
+## Build the current foundation
+
+The repository currently requires a stable Rust toolchain:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Platform build instructions will be added only when the corresponding project can be built and tested. See [development setup](./docs/development.md).
+
+## Security and privacy
+
+LadoFlow is designed for explicit pairing and local transport. Wireless support will not silently expose a listening service to untrusted networks. Please report vulnerabilities privately using the instructions in [SECURITY.md](./SECURITY.md).
+
+## Contributing
+
+The project is early, but architecture discussions, reproducible latency measurements, device compatibility reports, and focused patches are welcome. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+
+## License
+
+LadoFlow is available under the [MIT License](./LICENSE). The name and logo are project identity assets; redistribution must not imply endorsement by the LadoFlow project.
+

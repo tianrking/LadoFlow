@@ -1,0 +1,43 @@
+# Local scratch files
+.tmp/
+tmp/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# JavaScript
+node_modules/
+.pnpm-store/
+dist/
+
+# Android
+.gradle/
+local.properties
+**/build/
+*.apk
+*.aab
+
+# Apple
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# IDE and OS
+.idea/
+.vscode/*.log
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Secrets and signing material
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+*.cer
+*.key
+

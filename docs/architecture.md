@@ -1,0 +1,115 @@
+# Architecture
+
+## Objective
+
+LadoFlow turns a mobile device into an extended desktop display. A host must create or attach to a virtual display, capture changed frames, encode them using available hardware, transport them locally, and present them with stable pacing on the mobile device. Input follows the reverse path.
+
+The architecture is split so platform restrictions do not leak into the wire protocol.
+
+```mermaid
+flowchart TB
+    subgraph Host["Host computer"]
+      VD["Native virtual display"] --> DMG["Damage tracking / capture"]
+      DMG --> EN["Hardware encoder"]
+      INJ["Native input injection"]
+    end
+
+    subgraph Shared["Shared Rust core"]
+      SES["Session state machine"]
+      NEG["Capability negotiation"]
+      QOS["Frame pacing + quality policy"]
+      PRO["Bounded wire framing"]
+    end
+
+    subgraph Link["Local link"]
+      USB["USB adapter"]
+      LAN["Trusted LAN adapter — later"]
+    end
+
+    subgraph Display["Android / iOS / iPadOS"]
+      DEC["Native hardware decoder"] --> REN["Native low-latency renderer"]
+      TOUCH["Touch / pointer / keyboard"]
+    end
+
+    EN --> PRO
+    PRO --> USB
+    PRO -.-> LAN
+    USB --> DEC
+    LAN -.-> DEC
+    TOUCH --> SES
+    SES --> INJ
+    NEG --> SES
+    QOS --> EN
+```
+
+## Boundaries
+
+### Platform-native
+
+- virtual display creation and lifecycle;
+- desktop capture and damage regions;
+- hardware video encode/decode;
+- mobile rendering and refresh synchronization;
+- USB device APIs and installation behavior;
+- touch, keyboard, and pointer injection;
+- driver signing, app signing, notarization, and packaging.
+
+### Shared
+
+- protocol version and feature negotiation;
+- bounded message framing and parsing;
+- session transitions and reconnect semantics;
+- codec-neutral frame metadata;
+- telemetry schema and latency timestamps;
+- adaptive quality policy inputs and outputs.
+
+## Control plane and media plane
+
+Control messages are small, reliable, ordered, and bounded. They cover hello/version negotiation, capabilities, display configuration, session state, input, ping/pong, and errors.
+
+Media frames are larger and latency-sensitive. The transport may drop obsolete delta frames rather than building an unbounded queue. Keyframe requests and decoder resets remain reliable control messages.
+
+## Latency budget
+
+The initial 60 Hz engineering target—not a current result—is an interactive glass-to-glass median below 50 ms on supported wired hardware, with stable frame pacing more important than a misleading best-case sample.
+
+Every milestone must record at least:
+
+- capture timestamp;
+- encode start/end;
+- transport enqueue/dequeue;
+- decode start/end;
+- presentation timestamp;
+- dropped, superseded, and late frames;
+- reconnect duration.
+
+## Platform strategy
+
+### Windows
+
+Use the supported Indirect Display Driver model where practical. The signed driver and privileged service remain native; the desktop UI does not run inside the driver process.
+
+### macOS
+
+Keep virtual-display integration isolated behind a native adapter because public API availability and distribution constraints can change by OS version. Signing and notarization are release gates, not afterthoughts.
+
+### Linux
+
+Support will be backend-specific. Wayland compositors, X11, and DRM virtual outputs cannot be represented as one universal installer without platform checks.
+
+### Android
+
+Use Kotlin, MediaCodec, Surface/SurfaceTexture rendering, and Android USB APIs. The release path must not require developer mode or ADB.
+
+### iOS/iPadOS
+
+Use Swift, VideoToolbox/AVFoundation where applicable, Metal rendering, and App Store-compatible device communication. Private host-side techniques must not leak into the mobile App Store binary.
+
+## Security model
+
+- A new display device requires explicit local approval.
+- Session secrets are ephemeral and scoped to a paired host/display relationship.
+- Network listeners bind conservatively and authenticate before accepting display data.
+- Parsers reject unknown versions, oversized messages, invalid lengths, and resource-exhaustion patterns.
+- Captured pixels remain local unless a future remote mode is separately designed and enabled.
+
