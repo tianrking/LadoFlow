@@ -63,14 +63,15 @@ as the API baseline.
 ## Windows: implementation handoff
 
 The Windows desktop crate now has a target-gated native adapter that checks
-`Windows.Graphics.Capture` support, enumerates active monitor geometry, creates
-a hardware D3D11 device, and runs a short free-threaded capture probe. The probe
-has received real GPU surfaces on physical Windows hardware and shuts its event
-handler, frame pool, and session down explicitly. A separate bounded Media
-Foundation probe has activated Intel Quick Sync, submitted synthetic NV12
-frames, handled its asynchronous format change, and verified timestamped Annex B
-H.264 Main access units including an IDR/clean-point keyframe. The production
-capture-to-encode loop, service, and driver remain native milestones.
+`Windows.Graphics.Capture` support, enumerates active monitor geometry, and
+creates a hardware D3D11 device. Beyond the short probe, a cancellable worker
+captures the UI-selected monitor, performs BGRA-to-NV12 scaling with the D3D11
+video processor, and gives that GPU texture to a low-latency Media Foundation
+hardware encoder through a shared DXGI device manager. It emits timestamped
+Annex B H.264 Main access units, including explicit IDR/clean-point evidence,
+into the ordered LDFL USB runtime. The real Windows screen-to-simulated-display
+protocol path has passed on physical Intel Quick Sync hardware. The IddCx
+service/driver and physical Android USB proof remain separate milestones.
 
 ### Phase A — capture/encode proof of concept
 
@@ -78,8 +79,10 @@ capture-to-encode loop, service, and driver remain native milestones.
    source enumeration while preserving the existing `PlatformStatus` shape.
 2. [x] Prove selected-monitor capture with a bounded, free-threaded D3D11 frame
    pool and expose real callback/surface/startup diagnostics in the desktop UI.
-3. Turn the probe into a cancellable long-running capture source with explicit
-   UI selection, resize handling, and device-loss recovery.
+3. [x] Turn the probe into a cancellable long-running source with explicit UI
+   selection and bounded callback queues. Resize recreation and source-removal
+   handling are implemented; mode-change endurance and automatic D3D
+   device-loss recovery still need dedicated physical tests.
 4. [x] Enumerate NV12-to-H.264 Media Foundation transforms registered with the
    hardware MFT flag and report their real names without treating discovery as
    an encoding proof.
@@ -88,10 +91,12 @@ capture-to-encode loop, service, and driver remain native milestones.
    and require actual Annex B Main bytes plus keyframe evidence. The physical
    validation currently covers Intel Quick Sync; NVIDIA discovery is not counted
    as a successful encode on this machine.
-6. Hand captured Direct3D surfaces to the selected Media Foundation encoder
-   through an NV12 conversion path without a CPU readback.
-7. Feed encoded access units into the existing protocol/transport/runtime and
-   validate keyframe, resize, device-loss, stop, and restart behavior.
+6. [x] Hand captured Direct3D surfaces to the selected Media Foundation encoder
+   through GPU NV12 conversion without a CPU readback.
+7. [x] Feed encoded access units into the existing protocol/transport/runtime;
+   keyframe, wire ordering, cancellation, and restart have repeatable tests.
+   Mode-change endurance, device-loss recovery, and physical Android transport
+   remain open.
 8. Record capture, encode, enqueue, dequeue, and presentation timestamps so the
    same latency model is comparable with macOS.
 
@@ -125,10 +130,10 @@ claim the app interface before reporting readiness.
 5. [x] Compose the worker's bounded host endpoint into the runtime for
    Hello/Capabilities/DisplayConfig, monotonic peer sequencing, Ping/Pong,
    typed active control, cancellation, timeout, and failure diagnostics.
-6. [x] Feed paced, timestamped, hardware-encoded H.264 Main access units into
-   the established USB session. The source is still synthetic NV12 pixels, but
-   the bitstream is real and no loopback proof bytes are mislabeled as H.264.
-   Interdependent frames are reliable rather than incorrectly superseded.
+6. [x] Feed paced, timestamped, hardware-encoded H.264 Main access units from
+   the selected live Windows display into the established USB session. The
+   capture surface stays on the GPU through NV12 conversion and encoder input;
+   interdependent frames are reliable rather than incorrectly superseded.
 7. [ ] Validate permission UI, sustained throughput, detach, and reconnect on a
    physical Android device.
 8. [ ] Replace development driver setup with a signed, installer-managed

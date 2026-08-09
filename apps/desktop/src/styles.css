@@ -648,12 +648,33 @@ h2 {
 
 .display-row {
   display: flex;
+  width: 100%;
   align-items: center;
   gap: 11px;
   padding: 10px 11px;
   border: 1px solid rgba(139, 177, 188, 0.11);
   border-radius: 10px;
+  color: inherit;
   background: rgba(7, 20, 25, 0.45);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.display-row:hover:not(:disabled) {
+  border-color: rgba(33, 213, 219, 0.32);
+  background: rgba(9, 29, 35, 0.72);
+}
+
+.display-row--selected {
+  border-color: rgba(33, 213, 219, 0.54);
+  background: rgba(33, 213, 219, 0.08);
+  box-shadow: inset 3px 0 0 var(--cyan);
+}
+
+.display-row:disabled {
+  cursor: default;
 }
 
 .display-glyph {
@@ -663,6 +684,11 @@ h2 {
   border: 1px solid #4d6971;
   border-radius: 4px;
   box-shadow: inset 0 0 8px rgba(33, 213, 219, 0.08);
+}
+
+.display-row--selected .display-glyph {
+  border-color: var(--cyan);
+  box-shadow: inset 0 0 8px rgba(33, 213, 219, 0.18), 0 0 12px rgba(33, 213, 219, 0.1);
 }
 
 .display-row div {

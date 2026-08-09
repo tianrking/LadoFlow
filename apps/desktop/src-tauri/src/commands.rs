@@ -22,8 +22,9 @@ pub fn get_host_snapshot(runtime: State<'_, Arc<DesktopRuntime>>) -> HostSnapsho
 pub fn start_loopback(
     runtime: State<'_, Arc<DesktopRuntime>>,
     config: LoopbackConfig,
+    display_id: Option<String>,
 ) -> Result<HostSnapshot, String> {
-    runtime.start(config)
+    runtime.start(config, display_id)
 }
 
 #[tauri::command]

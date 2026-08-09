@@ -48,7 +48,7 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 | Shared runtime | Negotiation, sessions, reconnect policy, telemetry, pacing, and bounded loopback implemented | Platform-neutral runtime used by every host and display |
 | Desktop host | Runnable Tauri 2 loopback and diagnostics UI | One shell with target-gated native services |
 | macOS host | Permission/display discovery plus a real ScreenCaptureKit IOSurface probe and local app bundle | Long-running capture/VideoToolbox pipeline, native virtual-display adapter, and notarized host |
-| Windows host | Physical-hardware-verified D3D11 capture plus a continuous Intel Quick Sync H.264 Main producer with timestamped access units | Replace the current synthetic NV12 source with long-running zero-copy capture, then add the signed indirect-display driver |
+| Windows host | Physical-hardware-verified, long-running selected-display capture through D3D11 GPU conversion and low-latency H.264 Main hardware encoding | Add the isolated, signed IddCx virtual-display driver required for a true extended desktop |
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
 | Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
 | iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
@@ -121,10 +121,16 @@ pnpm check
 pnpm dev:desktop
 ```
 
-The desktop application negotiates a real protocol session and drives synthetic
-frames through the bounded media transport while showing live pacing, drop, and
-latency telemetry. It is a testable host foundation, not yet a usable extended
-display. See [development setup](./docs/development.md) and the
+Without a physical link, the desktop application negotiates a real loopback
+session and drives synthetic frames through the bounded media transport while
+showing live pacing, drop, and latency telemetry. On Windows, an established
+Android Open Accessory link instead captures the selected monitor, converts its
+D3D11 surface to NV12 on the GPU, hardware-encodes H.264 Main, and sends the
+access units through the same ordered protocol runtime. That native path is
+physically verified on the Windows host, but it remains an existing-monitor
+mirror until the IddCx virtual-display milestone is complete; Windows-to-Android
+USB has not yet been verified on a physical device. See
+[development setup](./docs/development.md) and the
 [platform handoff](./docs/platform-handoff.md).
 
 ## Security and privacy

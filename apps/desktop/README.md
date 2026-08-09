@@ -29,16 +29,16 @@ display.
 The Windows adapter enumerates active monitors and runs the same bounded native
 probe with `Windows.Graphics.Capture`, a hardware D3D11 device, and a
 free-threaded frame pool. The UI reports actual GPU-surface callbacks, dirty
-regions, dimensions, and startup timing. Its persistent native worker also
-enumerates Media Foundation H.264 encoders that explicitly accept NV12 and are
-registered as hardware MFTs. A bounded probe activates each candidate in order,
-handles asynchronous input/output events and dynamic output renegotiation, and
-requires non-empty Annex B H.264 Main output before reporting encode
-verification. It preserves the MFT's access-unit boundaries, sample timestamps,
-sample durations, and clean-point/IDR keyframe evidence. The probe has produced
-a timestamped Intel Quick Sync bitstream with a verified keyframe on physical
-hardware; it is not yet the long-running capture-to-encoder path or a virtual
-display.
+regions, dimensions, and startup timing. Its production worker turns the
+selected monitor into a cancellable, bounded capture stream, recreates the frame
+pool and converter when the source size changes, converts BGRA to NV12 with the
+D3D11 video processor, and hands the GPU texture to a Media Foundation hardware
+encoder through a DXGI device manager without CPU readback. The low-latency H.264
+Main encoder disables B-frames, handles asynchronous input/output events and
+dynamic output renegotiation, and preserves access-unit boundaries, timestamps,
+durations, and clean-point/IDR evidence. The complete capture-to-protocol path
+has produced real screen access units with Intel Quick Sync on physical Windows
+hardware. It mirrors an existing monitor; it is not yet an IddCx virtual display.
 
 The Windows host also includes an explicit Android Open Accessory preparation
 path. Shared Rust code validates the exact AOA protocol query, six terminated
@@ -63,13 +63,14 @@ and sends DisplayConfig before entering the connected state. The host nonce is
 filled from the operating-system random source. Active control traffic is
 decoded and bounded; Ping receives Pong, Android Error fails the session, and
 Input/Telemetry are validated without yet injecting native Windows input. A
-separate native worker then continuously hardware-encodes timestamped synthetic
-NV12 frames as H.264 Main access units. The session paces those units, marks
-IDR/clean-point frames, and sends every interdependent H.264 frame reliably over
-the same globally ordered LDFL stream while control remains responsive. This is
-real encoded media rather than the loopback's fake bytes, but the pixels are
-still a deterministic test pattern until the long-running D3D11 capture source
-is attached.
+separate native worker captures the UI-selected Windows monitor and continuously
+hardware-encodes its GPU surfaces as timestamped H.264 Main access units. The
+session paces those units, marks IDR/clean-point frames, and sends every
+interdependent H.264 frame reliably over the same globally ordered LDFL stream
+while control remains responsive. Capture cancellation, source removal, resize,
+frame closure, and encoder shutdown are explicit. Automatic D3D device-loss
+recovery remains open, and this end-to-end USB path still requires proof with a
+physical Android device.
 
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).
@@ -92,6 +93,13 @@ Verify a physical hardware encoder produces Annex B H.264 bytes with:
 
 ```powershell
 cargo test -p ladoflow-desktop hardware_h264_encoder_outputs_annex_b_stream -- --ignored --nocapture
+```
+
+Run every interactive Windows capture, hardware-encoder, and simulated-display
+integration test with:
+
+```powershell
+cargo test -p ladoflow-desktop -- --ignored --nocapture
 ```
 
 Build an ad-hoc local macOS application bundle with:

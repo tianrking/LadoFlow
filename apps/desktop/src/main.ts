@@ -190,7 +190,7 @@ function sessionPresentation(phase: SessionPhase, isUsbSession: boolean) {
       return isUsbSession
         ? {
             title: "USB H.264 stream is live",
-            copy: "Hardware-encoded H.264 Main access units are paced over the ordered USB link. The current image is a deterministic test pattern until native capture is attached.",
+            copy: "The selected Windows display is captured on the GPU, hardware-encoded as H.264 Main, and paced over the ordered USB link.",
             label: "Streaming",
             tone: "good" as const,
           }
@@ -232,9 +232,10 @@ function sessionPresentation(phase: SessionPhase, isUsbSession: boolean) {
   }
 }
 
-function renderDisplays(displays: DisplaySource[]) {
+function renderDisplays(displays: DisplaySource[], disabled: boolean) {
   elements.displayList.replaceChildren();
   if (displays.length === 0) {
+    selectedDisplayId = null;
     const empty = document.createElement("p");
     empty.className = "display-empty";
     empty.textContent = "No active displays reported by this platform adapter.";
@@ -242,9 +243,24 @@ function renderDisplays(displays: DisplaySource[]) {
     return;
   }
 
+  if (!displays.some((display) => display.id === selectedDisplayId)) {
+    selectedDisplayId =
+      displays.find((display) => display.primary)?.id ?? displays[0]?.id ?? null;
+  }
+
   for (const display of displays) {
-    const row = document.createElement("div");
-    row.className = "display-row";
+    const row = document.createElement("button");
+    const selected = display.id === selectedDisplayId;
+    row.type = "button";
+    row.className = selected ? "display-row display-row--selected" : "display-row";
+    row.disabled = disabled;
+    row.setAttribute("aria-pressed", String(selected));
+    row.setAttribute("aria-label", `Use ${display.name} as the capture source`);
+    row.addEventListener("click", () => {
+      selectedDisplayId = display.id;
+      elements.captureProbeResult.hidden = true;
+      renderDisplays(displays, disabled);
+    });
 
     const glyph = document.createElement("span");
     glyph.className = "display-glyph";
@@ -278,9 +294,9 @@ function render(snapshot: HostSnapshot) {
   elements.sessionTitle.textContent = presentation.title;
   elements.sessionCopy.textContent = snapshot.session.lastError ?? presentation.copy;
   elements.start.textContent = usbConnected ? "Start USB stream" : "Start loopback";
-  elements.setupTitle.textContent = usbConnected ? "USB encoded stream" : "Synthetic stream";
+  elements.setupTitle.textContent = usbConnected ? "USB screen stream" : "Synthetic stream";
   elements.mediaMode.textContent = usbConnected
-    ? "Hardware H.264 Main test pattern"
+    ? "GPU capture · hardware H.264 Main"
     : "Codec-neutral synthetic";
   elements.transportMode.textContent = usbConnected
     ? "Android Open Accessory USB"
@@ -319,11 +335,7 @@ function render(snapshot: HostSnapshot) {
     busy || isRunning || snapshot.platform.usbLinkState === "connecting";
   elements.disconnectAndroidUsb.hidden = snapshot.os !== "windows" || !usbConnected;
   elements.disconnectAndroidUsb.disabled = busy;
-  selectedDisplayId =
-    snapshot.platform.displays.find((display) => display.primary)?.id ??
-    snapshot.platform.displays[0]?.id ??
-    null;
-  renderDisplays(snapshot.platform.displays);
+  renderDisplays(snapshot.platform.displays, busy || isRunning);
 
   if (isRunning && pollingHandle === undefined) {
     pollingHandle = window.setInterval(() => void refreshSnapshot(false), 750);
@@ -474,7 +486,12 @@ async function prepareAndroidUsb() {
 }
 
 elements.start.addEventListener("click", () => {
-  void runAction(() => invoke<HostSnapshot>("start_loopback", { config: selectedConfig() }));
+  void runAction(() =>
+    invoke<HostSnapshot>("start_loopback", {
+      config: selectedConfig(),
+      displayId: selectedDisplayId,
+    }),
+  );
 });
 
 elements.stop.addEventListener("click", () => {

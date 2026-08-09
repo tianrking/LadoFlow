@@ -279,8 +279,15 @@ impl DesktopRuntime {
         Ok(self.snapshot())
     }
 
-    pub fn start(&self, config: LoopbackConfig) -> Result<HostSnapshot, String> {
+    pub fn start(
+        &self,
+        config: LoopbackConfig,
+        display_id: Option<String>,
+    ) -> Result<HostSnapshot, String> {
         let config = config.validate()?;
+        let display_id = display_id
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
         let mut worker_slot = self.lock_worker();
         if let Some(worker) = worker_slot.as_ref() {
             if !worker.handle.is_finished() {
@@ -304,7 +311,13 @@ impl DesktopRuntime {
             thread::Builder::new()
                 .name("ladoflow-usb-session".to_owned())
                 .spawn(move || {
-                    run_usb_control_session(&worker_shared, &worker_cancel, config, usb_transport);
+                    run_usb_control_session(
+                        &worker_shared,
+                        &worker_cancel,
+                        config,
+                        display_id.as_deref(),
+                        usb_transport,
+                    );
                 })
                 .map_err(|error| {
                     self.lock_shared().phase = SessionPhaseView::Failed;
@@ -389,9 +402,10 @@ fn run_usb_control_session(
     shared: &Arc<Mutex<SharedState>>,
     cancel: &AtomicBool,
     config: LoopbackConfig,
+    display_id: Option<&str>,
     mut transport: UsbAccessoryManager,
 ) {
-    let result = run_usb_control_session_inner(shared, cancel, config, &mut transport);
+    let result = run_usb_control_session_inner(shared, cancel, config, display_id, &mut transport);
     if let Err(error) = result {
         if cancel.load(Ordering::Acquire) {
             return;
@@ -409,6 +423,7 @@ fn run_usb_control_session_inner(
     shared: &Arc<Mutex<SharedState>>,
     cancel: &AtomicBool,
     config: LoopbackConfig,
+    display_id: Option<&str>,
     transport: &mut impl PacketTransport,
 ) -> Result<(), String> {
     let protocol_config = HostProtocolConfig::new(config.width, config.height, config.fps)?;
@@ -443,7 +458,7 @@ fn run_usb_control_session_inner(
         negotiated_config.fps,
         established.display_config.bitrate_kbps(),
     )?;
-    let video_stream = CapturedH264Stream::start(stream_config, None)?;
+    let video_stream = CapturedH264Stream::start(stream_config, display_id.map(ToOwned::to_owned))?;
     let mut access_units = VecDeque::<H264AccessUnit>::new();
     let mut media_clock_offset = None::<Duration>;
     let mut encoder_name = None::<String>;
@@ -980,11 +995,14 @@ mod tests {
     fn loopback_starts_records_frames_and_stops() {
         let runtime = DesktopRuntime::default();
         let started = runtime
-            .start(LoopbackConfig {
-                width: 1_920,
-                height: 1_080,
-                fps: 60,
-            })
+            .start(
+                LoopbackConfig {
+                    width: 1_920,
+                    height: 1_080,
+                    fps: 60,
+                },
+                None,
+            )
             .expect("start loopback");
         assert!(matches!(started.session.phase, SessionPhaseView::Streaming));
 
@@ -1084,11 +1102,14 @@ mod tests {
     fn invalid_refresh_rate_is_rejected() {
         let runtime = DesktopRuntime::default();
         let error = runtime
-            .start(LoopbackConfig {
-                width: 1_920,
-                height: 1_080,
-                fps: 59,
-            })
+            .start(
+                LoopbackConfig {
+                    width: 1_920,
+                    height: 1_080,
+                    fps: 59,
+                },
+                None,
+            )
             .expect_err("reject invalid refresh rate");
         assert!(error.contains("30 or 60"));
     }
@@ -1157,6 +1178,15 @@ mod tests {
     #[ignore = "requires an interactive Windows desktop and a physical H.264 encoder"]
     #[allow(clippy::too_many_lines)]
     fn native_capture_reaches_a_protocol_display_end_to_end() {
+        let platform = crate::platform::collect_status();
+        let selected_display_id = platform
+            .displays
+            .iter()
+            .find(|display| display.primary)
+            .or_else(|| platform.displays.first())
+            .expect("an active Windows display")
+            .id
+            .clone();
         let (mut host, mut display) = loopback_pair(TransportConfig::default());
         let cancel = Arc::new(AtomicBool::new(false));
         let display_cancel = Arc::clone(&cancel);
@@ -1271,6 +1301,7 @@ mod tests {
                 height: 720,
                 fps: 30,
             },
+            Some(&selected_display_id),
             &mut host,
         )
         .expect("native capture reaches protocol display");

@@ -40,7 +40,7 @@ path; it is not automatically a release claim.
 - [x] Validate the Tauri shell on a physical Windows development machine
 - [x] Windows Graphics Capture source enumeration and bounded GPU-surface probe
 - [x] Media Foundation hardware-MFT discovery and real NV12-to-Annex-B H.264 probe
-- [ ] Long-running Direct3D capture, NV12 conversion, and encoder handoff
+- [x] Long-running selected-display capture, GPU NV12 conversion, hardware encoder, and LDFL runtime handoff
 - [ ] Isolate privileged/driver communication from the Tauri UI process
 - [ ] Repeatable 30/60 Hz capture-to-loopback latency test
 
@@ -50,7 +50,7 @@ path; it is not automatically a release claim.
 - [x] Shared AOA 1/2 negotiation contract and Windows explicit mode-switch/endpoint-claim probe
 - [x] Cancellable Windows bulk worker with bounded queues, 64 KiB transfer chunks, and LDFL stream decoding
 - [x] Desktop runtime USB control exchange with Hello, Capabilities, DisplayConfig, Ping/Pong, and failure diagnostics
-- [x] Real hardware-encoded H.264 runtime to USB worker composition (synthetic pixel source pending capture handoff)
+- [x] Real selected-display capture and hardware H.264 runtime composition with the USB worker
 - [ ] Physical Windows-to-Android USB interoperability without ADB
 - [ ] H.264 hardware decoder and renderer
 - [ ] Touch and pointer return path
