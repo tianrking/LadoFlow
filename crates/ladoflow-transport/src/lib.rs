@@ -15,6 +15,7 @@ mod aoa;
 mod ldfl_stream;
 mod loopback;
 mod packet;
+mod pairing;
 mod tcp;
 mod transport;
 
@@ -29,6 +30,11 @@ pub use aoa::{
 pub use ldfl_stream::{LdflPacketDecoder, LdflPacketMux, LdflStreamError, ldfl_packet_sequence};
 pub use loopback::{DisconnectReport, LoopbackConfig, LoopbackEndpoint, loopback_pair};
 pub use packet::{Channel, Packet, SupersessionKey};
+pub use pairing::{
+    TETHER_PAIRING_RECORD_LEN, TETHER_PAIRING_TOKEN_SYMBOLS, TETHER_PAIRING_VERSION,
+    TetherPairingError, TetherPairingToken, TetherPairingTokenError,
+    authenticate_tether_display_stream, authenticate_tether_host_stream,
+};
 pub use tcp::{TcpPacketTransport, TcpTransportStatus};
 pub use transport::{
     ConnectionState, PacketTransport, QueueDepth, QueueLimits, QueueLimitsError, ReceiveError,
