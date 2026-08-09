@@ -49,6 +49,10 @@ use ::windows::{
 
 use super::{CapturePermission, CaptureProbeReport, DisplaySource, PlatformStatus};
 
+mod media_foundation;
+
+use self::media_foundation::{HardwareEncoder, MediaFoundationRuntime};
+
 const CAPTURE_PROBE_DURATION: Duration = Duration::from_millis(750);
 const CAPTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CAPTURE_BUFFER_COUNT: i32 = 3;
@@ -101,6 +105,9 @@ enum CaptureCommand {
         fps: u16,
         response: SyncSender<Result<CaptureProbeReport, String>>,
     },
+    EncoderCapabilities {
+        response: SyncSender<Result<Vec<HardwareEncoder>, String>>,
+    },
 }
 
 struct CaptureWorker {
@@ -123,6 +130,12 @@ impl CaptureWorker {
                 let Ok(_apartment) = apartment else {
                     return;
                 };
+                let media_foundation = MediaFoundationRuntime::startup();
+                let encoder_capabilities = match &media_foundation {
+                    Ok(_runtime) => MediaFoundationRuntime::hardware_h264_encoders(),
+                    Err(error) => Err(error.clone()),
+                };
+                let _media_foundation = media_foundation;
 
                 while let Ok(command) = receiver.recv() {
                     match command {
@@ -139,6 +152,9 @@ impl CaptureWorker {
                         } => {
                             let result = probe_screen_capture_on_worker(display_id.as_deref(), fps);
                             let _ = response.send(result);
+                        }
+                        CaptureCommand::EncoderCapabilities { response } => {
+                            let _ = response.send(encoder_capabilities.clone());
                         }
                     }
                 }
@@ -176,6 +192,16 @@ impl CaptureWorker {
         receiver
             .recv_timeout(CAPTURE_COMMAND_TIMEOUT)
             .map_err(|error| format!("Windows capture probe timed out: {error}"))?
+    }
+
+    fn encoder_capabilities(&self) -> Result<Vec<HardwareEncoder>, String> {
+        let (response, receiver) = sync_channel(1);
+        self.commands
+            .send(CaptureCommand::EncoderCapabilities { response })
+            .map_err(|error| format!("Windows media worker stopped: {error}"))?;
+        receiver
+            .recv_timeout(CAPTURE_COMMAND_TIMEOUT)
+            .map_err(|error| format!("Windows encoder query timed out: {error}"))?
     }
 }
 
@@ -226,6 +252,7 @@ pub fn collect_status() -> PlatformStatus {
 
     PlatformStatus {
         capture_backend: backend,
+        encoder_status: query_encoder_status(),
         capture_permission: if capture_supported {
             CapturePermission::Granted
         } else {
@@ -389,6 +416,23 @@ fn build_probe_report(
 
 fn query_capture_support() -> Result<bool, String> {
     capture_worker()?.is_supported()
+}
+
+fn query_encoder_status() -> String {
+    match capture_worker().and_then(CaptureWorker::encoder_capabilities) {
+        Ok(encoders) if encoders.is_empty() => {
+            "Media Foundation reported no hardware H.264 encoder for NV12 input".to_owned()
+        }
+        Ok(encoders) => {
+            let names = encoders
+                .into_iter()
+                .map(|encoder| encoder.name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Media Foundation hardware H.264 encoder: {names}")
+        }
+        Err(error) => format!("Media Foundation hardware H.264 query failed: {error}"),
+    }
 }
 
 fn capture_worker() -> Result<&'static CaptureWorker, String> {
@@ -731,7 +775,9 @@ mod tests {
     #[test]
     fn platform_status_uses_the_windows_backend() {
         let status = collect_status();
+        eprintln!("{status:#?}");
         assert!(status.capture_backend.contains("Windows.Graphics.Capture"));
+        assert!(status.encoder_status.contains("Media Foundation"));
         assert!(status.virtual_display_status.contains("IddCx"));
     }
 

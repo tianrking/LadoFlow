@@ -77,12 +77,15 @@ encoding, service, and driver remain native milestones.
    pool and expose real callback/surface/startup diagnostics in the desktop UI.
 3. Turn the probe into a cancellable long-running capture source with explicit
    UI selection, resize handling, and device-loss recovery.
-4. Hand Direct3D surfaces to a Media Foundation encoder, preferring NV12 input
+4. [x] Enumerate NV12-to-H.264 Media Foundation transforms registered with the
+   hardware MFT flag and report their real names without treating discovery as
+   an encoding proof.
+5. Hand Direct3D surfaces to the selected Media Foundation encoder, preferring NV12 input
    and H.264 output. Record whether the selected transform is hardware-backed;
    do not label software encoding as hardware encoding.
-5. Feed encoded access units into the existing protocol/transport/runtime and
+6. Feed encoded access units into the existing protocol/transport/runtime and
    validate keyframe, resize, device-loss, stop, and restart behavior.
-6. Record capture, encode, enqueue, dequeue, and presentation timestamps so the
+7. Record capture, encode, enqueue, dequeue, and presentation timestamps so the
    same latency model is comparable with macOS.
 
 Windows.Graphics.Capture is suitable for the capture proof of concept and

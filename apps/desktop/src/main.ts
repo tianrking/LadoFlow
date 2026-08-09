@@ -44,6 +44,7 @@ interface HostSnapshot {
   };
   platform: {
     captureBackend: string;
+    encoderStatus: string;
     capturePermission: CapturePermission;
     virtualDisplayStatus: string;
     displays: DisplaySource[];
@@ -250,7 +251,7 @@ function render(snapshot: HostSnapshot) {
     permissionGranted ? "Allowed" : permissionUnsupported ? "N/A" : "Permission needed",
     permissionGranted ? "good" : permissionUnsupported ? "idle" : "warn",
   );
-  elements.captureBackend.textContent = `${snapshot.platform.captureBackend}. ${snapshot.platform.virtualDisplayStatus}`;
+  elements.captureBackend.textContent = `${snapshot.platform.captureBackend}. ${snapshot.platform.encoderStatus}. ${snapshot.platform.virtualDisplayStatus}`;
   elements.requestPermission.hidden = permissionGranted || permissionUnsupported;
   elements.requestPermission.disabled = busy;
   const hasNativeCaptureProbe = snapshot.os === "macos" || snapshot.os === "windows";

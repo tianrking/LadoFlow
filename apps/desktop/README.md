@@ -29,8 +29,10 @@ display.
 The Windows adapter enumerates active monitors and runs the same bounded native
 probe with `Windows.Graphics.Capture`, a hardware D3D11 device, and a
 free-threaded frame pool. The UI reports actual GPU-surface callbacks, dirty
-regions, dimensions, and startup timing. It does not yet claim a long-running
-encoder or virtual display.
+regions, dimensions, and startup timing. Its persistent native worker also
+enumerates Media Foundation H.264 encoders that explicitly accept NV12 and are
+registered as hardware MFTs. Discovery does not yet claim that a frame has been
+encoded, and the app does not claim a long-running stream or virtual display.
 
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).

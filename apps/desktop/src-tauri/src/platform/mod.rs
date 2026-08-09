@@ -31,6 +31,7 @@ pub enum CapturePermission {
 #[serde(rename_all = "camelCase")]
 pub struct PlatformStatus {
     pub capture_backend: String,
+    pub encoder_status: String,
     pub capture_permission: CapturePermission,
     pub virtual_display_status: String,
     pub displays: Vec<DisplaySource>,
@@ -75,6 +76,10 @@ pub fn collect_status() -> PlatformStatus {
 
     PlatformStatus {
         capture_backend: backend.to_owned(),
+        encoder_status: format!(
+            "Native encoder capability probe is not implemented for {}",
+            std::env::consts::OS
+        ),
         capture_permission: CapturePermission::Unsupported,
         virtual_display_status: "Native virtual-display adapter is not installed yet.".to_owned(),
         displays: Vec::new(),
