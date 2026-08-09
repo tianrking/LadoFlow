@@ -224,8 +224,8 @@ pub use macos::{collect_status, probe_screen_capture, request_capture_access};
 #[cfg(target_os = "windows")]
 pub use windows::{
     CapturedH264Stream, NativeInputController, UsbAccessoryManager, collect_status,
-    disable_virtual_display, enable_virtual_display, prepare_capture_display_mode,
-    probe_screen_capture, request_capture_access,
+    disable_virtual_display, discover_tether_endpoints, enable_virtual_display,
+    prepare_capture_display_mode, probe_screen_capture, request_capture_access,
 };
 
 #[cfg(not(target_os = "windows"))]

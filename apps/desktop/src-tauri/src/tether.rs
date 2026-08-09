@@ -30,6 +30,37 @@ pub struct TetherPairingReport {
     detail: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TetherEndpointCandidate {
+    pub(crate) endpoint: String,
+    pub(crate) adapter_name: String,
+    pub(crate) gateway: String,
+    pub(crate) evidence: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TetherDiscoveryReport {
+    pub(crate) candidates: Vec<TetherEndpointCandidate>,
+    pub(crate) detail: String,
+}
+
+pub fn discover_tether_endpoints() -> Result<TetherDiscoveryReport, String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::platform::discover_tether_endpoints()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(TetherDiscoveryReport {
+            candidates: Vec::new(),
+            detail: "Automatic USB-tether discovery is currently available on Windows; enter the Android address manually on this platform."
+                .to_owned(),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct TetherConnection {
     endpoint: SocketAddr,
@@ -121,7 +152,7 @@ fn parse_tether_endpoint(value: &str) -> Result<SocketAddr, String> {
     Ok(SocketAddr::V4(endpoint_v4))
 }
 
-fn is_local_tether_address(address: Ipv4Addr) -> bool {
+pub(crate) fn is_local_tether_address(address: Ipv4Addr) -> bool {
     let [first, second, _third, _fourth] = address.octets();
     let shared_carrier_nat = first == 100 && (64..=127).contains(&second);
     (address.is_private() || address.is_link_local() || address.is_loopback() || shared_carrier_nat)

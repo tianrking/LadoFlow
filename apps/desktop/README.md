@@ -102,6 +102,17 @@ device-loss recovery remains open independently of USB link recovery, and the
 combined video/input USB path still requires proof with a physical Android
 device.
 
+The preferred wired fallback uses Android USB tethering without requiring an
+inbound Windows firewall rule. **Find USB tether** reads the Windows Plug and
+Play network-device tree and active adapter gateway table, then offers only
+private IPv4 gateways belonging to an adapter with proven USB ancestry. It does
+not scan the LAN or probe ports. The user confirms the detected address and
+enters Android's one-time code; the desktop performs mutual HMAC authentication
+with fresh nonces before handing the socket to the same LDFL negotiation,
+capture, encode, input, telemetry, and cancellation runtime. The token is
+cleared and not persisted. Loopback tests verify this composition, but physical
+Windows-to-Android tether interoperability remains an open validation step.
+
 Native capture, encoder, driver, and Windows ownership boundaries are recorded
 in the [platform handoff](../../docs/platform-handoff.md).
 

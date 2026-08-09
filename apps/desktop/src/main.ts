@@ -125,6 +125,18 @@ interface TetherPairingReport {
   detail: string;
 }
 
+interface TetherEndpointCandidate {
+  endpoint: string;
+  adapterName: string;
+  gateway: string;
+  evidence: string;
+}
+
+interface TetherDiscoveryReport {
+  candidates: TetherEndpointCandidate[];
+  detail: string;
+}
+
 interface VirtualDisplayActionReport {
   passed: boolean;
   status: VirtualDisplayStatus;
@@ -157,9 +169,13 @@ const elements = {
   virtualDisplayResult: getElement("virtual-display-result"),
   prepareAndroidUsb: getButton("prepare-android-usb"),
   pairAndroidTether: getButton("pair-android-tether"),
+  discoverAndroidTether: getButton("discover-android-tether"),
   disconnectAndroidUsb: getButton("disconnect-android-usb"),
   tetherPairingForm: getElement("tether-pairing-form"),
   tetherEndpoint: getInput("tether-endpoint"),
+  tetherCandidatesLabel: getElement("tether-candidates-label"),
+  tetherCandidates: getSelect("tether-candidates"),
+  tetherDiscoveryResult: getElement("tether-discovery-result"),
   tetherToken: getInput("tether-token"),
   tetherPairingResult: getElement("tether-pairing-result"),
   directUsbNote: getElement("direct-usb-note"),
@@ -508,6 +524,9 @@ function render(snapshot: HostSnapshot) {
   elements.directUsbNote.hidden = snapshot.os !== "windows" || usbMode;
   elements.tetherPairingForm.hidden = usbMode;
   elements.tetherEndpoint.disabled = busy || isRunning;
+  elements.discoverAndroidTether.hidden = snapshot.os !== "windows" || usbMode;
+  elements.discoverAndroidTether.disabled = busy || isRunning;
+  elements.tetherCandidates.disabled = busy || isRunning;
   elements.tetherToken.disabled = busy || isRunning;
   elements.pairAndroidTether.disabled = busy || isRunning;
   elements.disconnectAndroidUsb.hidden = !usbConnected;
@@ -520,6 +539,7 @@ function render(snapshot: HostSnapshot) {
     elements.enableVirtualDisplay.disabled = true;
     elements.disableVirtualDisplay.disabled = true;
     elements.prepareAndroidUsb.disabled = true;
+    elements.discoverAndroidTether.disabled = true;
     elements.pairAndroidTether.disabled = true;
     elements.disconnectAndroidUsb.disabled = true;
   }
@@ -573,6 +593,7 @@ async function runAction(action: () => Promise<HostSnapshot>) {
   elements.enableVirtualDisplay.disabled = true;
   elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.discoverAndroidTether.disabled = true;
   elements.pairAndroidTether.disabled = true;
   elements.tetherEndpoint.disabled = true;
   elements.tetherToken.disabled = true;
@@ -610,6 +631,7 @@ async function runCaptureProbe() {
   elements.enableVirtualDisplay.disabled = true;
   elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.discoverAndroidTether.disabled = true;
   elements.pairAndroidTether.disabled = true;
   elements.tetherEndpoint.disabled = true;
   elements.tetherToken.disabled = true;
@@ -662,6 +684,29 @@ function renderTetherPairing(report: TetherPairingReport) {
   elements.tetherPairingResult.textContent = report.detail;
 }
 
+function renderTetherDiscovery(report: TetherDiscoveryReport) {
+  elements.tetherCandidates.replaceChildren();
+  const hasCandidates = report.candidates.length > 0;
+  const hasMultipleCandidates = report.candidates.length > 1;
+  for (const candidate of report.candidates) {
+    const option = document.createElement("option");
+    option.value = candidate.endpoint;
+    option.textContent = `${candidate.adapterName} · ${candidate.gateway}`;
+    option.title = candidate.evidence;
+    elements.tetherCandidates.append(option);
+  }
+  elements.tetherCandidatesLabel.hidden = !hasMultipleCandidates;
+  elements.tetherCandidates.hidden = !hasMultipleCandidates;
+  if (hasCandidates) {
+    elements.tetherEndpoint.value = report.candidates[0]?.endpoint ?? "";
+  }
+  elements.tetherDiscoveryResult.hidden = false;
+  elements.tetherDiscoveryResult.className = hasCandidates
+    ? "capture-probe-result capture-probe-result--good"
+    : "capture-probe-result capture-probe-result--warn";
+  elements.tetherDiscoveryResult.textContent = report.detail;
+}
+
 function hexByte(value: number): string {
   return `0x${value.toString(16).padStart(2, "0")}`;
 }
@@ -691,6 +736,7 @@ async function changeVirtualDisplay(enable: boolean): Promise<VirtualDisplayActi
   elements.enableVirtualDisplay.disabled = true;
   elements.disableVirtualDisplay.disabled = true;
   elements.prepareAndroidUsb.disabled = true;
+  elements.discoverAndroidTether.disabled = true;
   elements.pairAndroidTether.disabled = true;
   elements.tetherEndpoint.disabled = true;
   elements.tetherToken.disabled = true;
@@ -721,6 +767,7 @@ async function prepareAndroidUsb() {
   busy = true;
   const idleLabel = elements.prepareAndroidUsb.textContent;
   elements.prepareAndroidUsb.disabled = true;
+  elements.discoverAndroidTether.disabled = true;
   elements.pairAndroidTether.disabled = true;
   elements.tetherEndpoint.disabled = true;
   elements.tetherToken.disabled = true;
@@ -773,6 +820,7 @@ async function pairAndroidTether() {
   const idleLabel = elements.pairAndroidTether.textContent;
   elements.pairAndroidTether.textContent = "Authenticating USB tether…";
   elements.pairAndroidTether.disabled = true;
+  elements.discoverAndroidTether.disabled = true;
   elements.tetherEndpoint.disabled = true;
   elements.tetherToken.disabled = true;
   elements.tetherToken.value = "";
@@ -809,6 +857,34 @@ async function pairAndroidTether() {
   }
 }
 
+async function discoverAndroidTether() {
+  if (busy || !nativeBridgeAvailable) return;
+  busy = true;
+  const idleLabel = elements.discoverAndroidTether.textContent;
+  elements.discoverAndroidTether.textContent = "Checking USB network…";
+  elements.discoverAndroidTether.disabled = true;
+  elements.tetherEndpoint.disabled = true;
+  elements.tetherCandidates.disabled = true;
+  elements.tetherToken.disabled = true;
+  elements.pairAndroidTether.disabled = true;
+  elements.prepareAndroidUsb.disabled = true;
+  elements.disconnectAndroidUsb.disabled = true;
+  elements.start.disabled = true;
+  elements.stop.disabled = true;
+  elements.tetherDiscoveryResult.hidden = true;
+  clearError();
+  try {
+    const report = await invoke<TetherDiscoveryReport>("discover_android_tether");
+    renderTetherDiscovery(report);
+  } catch (error) {
+    showError(error);
+  } finally {
+    busy = false;
+    elements.discoverAndroidTether.textContent = idleLabel;
+    if (lastSnapshot) render(lastSnapshot);
+  }
+}
+
 async function startSession() {
   if (busy) return;
   const shouldEnableVirtualDisplay =
@@ -830,6 +906,9 @@ async function disconnectWiredDisplay() {
   await runAction(() => invoke<HostSnapshot>("disconnect_android_usb"));
   elements.tetherToken.value = "";
   elements.tetherPairingResult.hidden = true;
+  elements.tetherDiscoveryResult.hidden = true;
+  elements.tetherCandidatesLabel.hidden = true;
+  elements.tetherCandidates.hidden = true;
   elements.usbProbeResult.hidden = true;
 }
 
@@ -852,6 +931,10 @@ elements.enableVirtualDisplay.addEventListener("click", () => void changeVirtual
 elements.disableVirtualDisplay.addEventListener("click", () => void changeVirtualDisplay(false));
 elements.prepareAndroidUsb.addEventListener("click", () => void prepareAndroidUsb());
 elements.pairAndroidTether.addEventListener("click", () => void pairAndroidTether());
+elements.discoverAndroidTether.addEventListener("click", () => void discoverAndroidTether());
+elements.tetherCandidates.addEventListener("change", () => {
+  elements.tetherEndpoint.value = elements.tetherCandidates.value;
+});
 elements.tetherToken.addEventListener("input", () => {
   const symbols = elements.tetherToken.value
     .toUpperCase()

@@ -63,11 +63,13 @@ use super::{
 mod capture_stream;
 mod input_injector;
 mod media_foundation;
+mod tether_discovery;
 mod usb_accessory;
 mod video_processor;
 mod virtual_display;
 
 pub use input_injector::NativeInputController;
+pub use tether_discovery::discover_tether_endpoints;
 pub use usb_accessory::UsbAccessoryManager;
 pub use virtual_display::{disable as disable_virtual_display, enable as enable_virtual_display};
 

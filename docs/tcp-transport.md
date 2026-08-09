@@ -50,10 +50,10 @@ authenticated-encryption layer rather than silently reusing this boundary.
 
 Android listens on TCP port `49231` by default and may report a different port
 if the user explicitly overrides it. The desktop connects only after the user
-starts the Android foreground display session. Automatic discovery will be
-limited to the default gateway of an interface proven by Windows to be a
-USB-tether adapter; the UI will always permit an explicit numeric address and
-port.
+starts the Android foreground display session. On Windows, automatic discovery
+is limited to the default gateway of an active adapter whose Plug and Play
+ancestry contains a USB device. The UI always permits an explicit numeric
+address and port.
 
 Android generates a fresh 80-bit token from the operating-system CSPRNG for
 every listening session. It displays the token as four groups of four Crockford
@@ -135,7 +135,7 @@ so the existing LDFL magic can follow the 224-byte preface immediately.
 
 ## Desktop integration status
 
-The desktop now exposes a bounded manual composition path around the transport
+The desktop now exposes a bounded composition path around the transport
 primitive:
 
 - accept a numeric IPv4 address with an optional port and default to `49231`;
@@ -150,6 +150,17 @@ primitive:
 - expose tether state in the desktop snapshot without presenting direct AOA as
   the default Windows path.
 
+The **Find USB tether** action performs read-only Windows discovery. It
+enumerates present network devices with SetupAPI, reads their
+`NetCfgInstanceId`, walks each Config Manager parent chain with a strict depth
+bound, and retains only devices with a `USB\\` ancestor. It then intersects
+those adapter GUIDs with active IPv4 adapters and their reported gateways from
+`GetAdaptersAddresses`. Only private, carrier-grade NAT, or link-local gateway
+addresses are offered; loopback and public addresses are excluded. Enumeration
+and result counts are bounded, and discovery never opens a socket, scans a
+subnet, or probes a port. The user still confirms the candidate against the
+address shown by Android before the authenticated pairing command connects.
+
 The desktop UI uses a password input with autocomplete disabled, clears it
 before awaiting the native command, and keeps direct Android Open Accessory
 mode explicitly labelled experimental. A normal-browser preview uses read-only
@@ -163,7 +174,6 @@ claim of physical Windows-to-Android cable interoperability.
 ## Remaining product work
 
 - implement the Android listener as a foreground, user-visible display action;
-- implement bounded Windows USB-tether default-gateway discovery;
 - add a session-bound resumption policy before automatic tether reconnect;
 - prove Windows-to-Android LDFL negotiation over a physical tether cable;
 - record sustained bitrate, frame pacing, latency, cable removal, and recovery;

@@ -230,6 +230,19 @@
                   spellcheck="false"
                   placeholder="192.168.42.129:49231"
                 />
+                <button id="discover-android-tether" class="button button--ghost" type="button">
+                  Find USB tether
+                </button>
+                <label id="tether-candidates-label" class="field-label" for="tether-candidates" hidden>
+                  Detected USB network
+                </label>
+                <select id="tether-candidates" class="field-control" hidden></select>
+                <p
+                  id="tether-discovery-result"
+                  class="capture-probe-result"
+                  aria-live="polite"
+                  hidden
+                ></p>
                 <label class="field-label" for="tether-token">One-time pairing code</label>
                 <input
                   id="tether-token"

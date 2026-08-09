@@ -26,6 +26,7 @@ pub fn run() {
             commands::run_screen_capture_probe,
             commands::prepare_android_usb,
             commands::pair_android_tether,
+            commands::discover_android_tether,
             commands::disconnect_android_usb,
             commands::enable_virtual_display,
             commands::disable_virtual_display,

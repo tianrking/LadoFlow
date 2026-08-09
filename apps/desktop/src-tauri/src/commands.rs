@@ -14,7 +14,9 @@ use crate::{
         request_capture_access,
     },
     runtime::{DesktopRuntime, HostSnapshot, LoopbackConfig},
-    tether::{TetherPairingReport, TetherPairingRequest},
+    tether::{
+        TetherDiscoveryReport, TetherPairingReport, TetherPairingRequest, discover_tether_endpoints,
+    },
 };
 
 #[tauri::command]
@@ -71,6 +73,13 @@ pub async fn pair_android_tether(
     tauri::async_runtime::spawn_blocking(move || runtime.pair_android_tether(request))
         .await
         .map_err(|error| format!("Android USB-tether pairing worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn discover_android_tether() -> Result<TetherDiscoveryReport, String> {
+    tauri::async_runtime::spawn_blocking(discover_tether_endpoints)
+        .await
+        .map_err(|error| format!("Android USB-tether discovery worker failed: {error}"))?
 }
 
 #[tauri::command]
