@@ -33,7 +33,7 @@ La experiencia final deberá ser sencilla: instalar el host, abrir LadoFlow en l
 | Runtime compartido | Negociación, sesiones, reconexión, telemetría, ritmo y loopback implementados | Runtime común para hosts y pantallas |
 | Host de escritorio | Aplicación Tauri 2 con loopback y diagnósticos ejecutable | Una interfaz con servicios nativos por plataforma |
 | Host macOS | Permisos/pantallas, prueba IOSurface real con ScreenCaptureKit y paquete local implementados | Flujo continuo con VideoToolbox, pantalla virtual nativa y aplicación notarizada |
-| Host Windows | Captura, H.264 por GPU y entrada verificados; controlador IddCx de un monitor y gestor de ciclo de vida compilados y validados | Instalación confiable, selección automática, recuperación en sistema limpio y firma de producción |
+| Host Windows | Captura, H.264 por GPU y entrada verificados; controlador IddCx, servicio LocalSystem y cliente IPC acotado compilados y validados | Instalación confiable, selección automática, recuperación en sistema limpio y firma de producción |
 | Host Linux | Solo arquitectura | Integración compatible con Wayland, X11 y DRM |
 | Pantalla Android | Solo arquitectura | Receptor Kotlin nativo con decodificación por hardware |
 | Pantalla iOS/iPadOS | Solo arquitectura | Receptor Swift nativo con decodificación por hardware |

@@ -42,7 +42,7 @@ path; it is not automatically a release claim.
 - [x] Media Foundation hardware-MFT discovery and real NV12-to-Annex-B H.264 probe
 - [x] Long-running selected-display capture, GPU NV12 conversion, hardware encoder, and LDFL runtime handoff
 - [x] Capability-gated pointer, wheel, keyboard, and direct-touch injection with selected-monitor coordinate mapping
-- [ ] Isolate privileged/driver communication from the Tauri UI process
+- [x] Isolate privileged device ownership behind a LocalSystem service and bounded, PID-verified local IPC
 - [ ] Repeatable 30/60 Hz capture-to-loopback latency test
 
 ## M4 — Android display and USB
@@ -62,7 +62,8 @@ path; it is not automatically a release claim.
 
 - [x] Supported, build-verified one-monitor IddCx indirect-display driver path
 - [x] Stable monitor identity and tablet-oriented 60 Hz resolution table
-- [x] Out-of-process JSON start/status/stop lifecycle controller
+- [x] LocalSystem software-device owner plus unprivileged JSON start/status/stop client
+- [x] Versioned fixed-size IPC, explicit DACL, remote-client rejection, and SCM PID verification
 - [x] Universal API/INF validation and test-signed development catalog build
 - [ ] Runtime mode/rotation negotiation with the connected mobile display
 - [ ] Trusted install plus sleep/wake, crash, GPU-reset, and rollback recovery

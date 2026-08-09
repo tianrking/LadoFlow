@@ -50,6 +50,9 @@ media and input composition path:
 ```mermaid
 flowchart LR
     UI["Tauri host\ndisplay selection · diagnostics"] --> RT["Rust runtime\nsession · negotiation · telemetry"]
+    UI --> CTL["Unprivileged controller\nSCM PID verification"]
+    CTL -->|"bounded local pipe v1"| SVC["LocalSystem service\nHSWDEVICE owner"]
+    SVC --> IDD
     IDD["LadoFlow IddCx monitor\nbuild-verified, install proof pending"] -.->|virtual HMONITOR| WGC
     MON["Selected physical HMONITOR"] --> WGC["Windows.Graphics.Capture\nfree-threaded D3D11 surfaces"]
     WGC --> VP["D3D11 video processor\nBGRA → NV12"]
@@ -65,8 +68,10 @@ The selected-display capture, GPU conversion, Intel Quick Sync encoding, wire
 composition, and native Windows input path have physical-host evidence. The
 IddCx project separately compiles one stable virtual monitor, passes Universal
 API and INF validation, generates a development catalog, and exposes a JSON
-start/status/stop controller. It has not yet been trusted and installed on this
-machine, so true extended-desktop behavior is not counted as physically proven.
+start/status/stop client over a versioned privileged-service boundary. The pipe
+rejects remote clients and the client verifies its server against SCM's PID. It
+has not yet been trusted and installed on this machine, so true extended-desktop
+behavior is not counted as physically proven.
 
 The USB path enforces monotonically increasing sequence numbers per sender,
 uses an operating-system random session nonce, validates active input,
@@ -138,12 +143,13 @@ low-latency Media Foundation hardware H.264 encoder, and sends real access
 units through the USB runtime. The native input sink maps pointer, keyboard,
 wheel, and touch events back to the selected monitor.
 
-`platform/windows/idd` now contains a separate UMDF 2 IddCx driver and
-software-device lifecycle controller. Its driver frame loop acknowledges DWM
-surfaces quickly; the desktop host captures the resulting virtual `HMONITOR`
-through the same verified WGC/encoder path. Source/build validation is complete;
-trusted installation, automatic host integration, signing, and physical
-extended-display evidence remain release gates.
+`platform/windows/idd` now contains a separate UMDF 2 IddCx driver, LocalSystem
+software-device lifecycle service, fixed-size v1 IPC contract, and unprivileged
+JSON controller. Its driver frame loop acknowledges DWM surfaces quickly; the
+desktop host captures the resulting virtual `HMONITOR` through the same verified
+WGC/encoder path. Source/build and non-installing service/IPC validation are
+complete; trusted installation, automatic host integration, signing, and
+physical extended-display evidence remain release gates.
 
 ### macOS
 

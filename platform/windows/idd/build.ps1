@@ -207,9 +207,19 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $controller = Join-Path $outputRoot 'LadoFlowVirtualDisplay.exe'
+& $controller self-test
+if ($LASTEXITCODE -ne 0) {
+    throw "The lifecycle controller self-test failed with exit code $LASTEXITCODE."
+}
 & $controller status
 if ($LASTEXITCODE -ne 0) {
     throw "The lifecycle controller status smoke test failed with exit code $LASTEXITCODE."
+}
+
+$service = Join-Path $outputRoot 'LadoFlowDisplayService.exe'
+& $service self-test
+if ($LASTEXITCODE -ne 0) {
+    throw "The privileged service self-test failed with exit code $LASTEXITCODE."
 }
 
 $artifactRoot = Join-Path $projectRoot "dist\$Configuration\x64"
@@ -218,6 +228,7 @@ $symbolsArtifact = Join-Path $artifactRoot 'symbols'
 New-Item -ItemType Directory -Force -Path $driverArtifact, $symbolsArtifact | Out-Null
 Copy-Item -Path (Join-Path $outputRoot 'LadoFlowIdd\*') -Destination $driverArtifact -Recurse -Force
 Copy-Item -LiteralPath $controller -Destination $artifactRoot -Force
+Copy-Item -LiteralPath $service -Destination $artifactRoot -Force
 
 $certificate = Join-Path $outputRoot 'LadoFlowIdd.cer'
 if (Test-Path -LiteralPath $certificate) {

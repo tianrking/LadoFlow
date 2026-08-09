@@ -6,6 +6,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LadoFlowIdd", "driver\LadoF
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LadoFlowVirtualDisplay", "controller\LadoFlowVirtualDisplay.vcxproj", "{C22F5141-7F6E-454E-B823-2F4B92A7177B}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LadoFlowDisplayService", "service\LadoFlowDisplayService.vcxproj", "{A5D0C31B-9AA8-4B37-B84E-1D8692231911}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -20,6 +22,10 @@ Global
 		{C22F5141-7F6E-454E-B823-2F4B92A7177B}.Debug|x64.Build.0 = Debug|x64
 		{C22F5141-7F6E-454E-B823-2F4B92A7177B}.Release|x64.ActiveCfg = Release|x64
 		{C22F5141-7F6E-454E-B823-2F4B92A7177B}.Release|x64.Build.0 = Release|x64
+		{A5D0C31B-9AA8-4B37-B84E-1D8692231911}.Debug|x64.ActiveCfg = Debug|x64
+		{A5D0C31B-9AA8-4B37-B84E-1D8692231911}.Debug|x64.Build.0 = Debug|x64
+		{A5D0C31B-9AA8-4B37-B84E-1D8692231911}.Release|x64.ActiveCfg = Release|x64
+		{A5D0C31B-9AA8-4B37-B84E-1D8692231911}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

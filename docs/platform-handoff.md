@@ -71,9 +71,10 @@ hardware encoder through a shared DXGI device manager. It emits timestamped
 Annex B H.264 Main access units, including explicit IDR/clean-point evidence,
 into the ordered LDFL USB runtime. The real Windows screen-to-simulated-display
 protocol path has passed on physical Intel Quick Sync hardware. A separate
-one-monitor UMDF 2 IddCx project and JSON lifecycle controller now build and
-pass Universal API/INF/catalog validation. Trusted installation and physical
-Android USB proof remain separate milestones.
+one-monitor UMDF 2 IddCx project, LocalSystem lifecycle service, fixed v1 local
+IPC contract, and JSON client now build and pass their non-installing tests plus
+Universal API/INF/catalog validation. Trusted installation and physical Android
+USB proof remain separate milestones.
 
 ### Phase A — capture/encode proof of concept
 
@@ -171,10 +172,12 @@ existing WGC/GPU H.264 path; encoding and USB work do not run in the UMDF host.
 Follow Microsoft's [indirect display driver overview](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/indirect-display-driver-model-overview)
 and the official sample lineage recorded in the component's third-party notice.
 
-The driver is outside the Tauri process. `LadoFlowVirtualDisplay.exe` owns the
-software-device handle and exposes machine-readable `start`, `status`, and
-`stop` results through a narrow JSON process boundary. The remaining host
-integration must cover:
+The driver is outside the Tauri process. `LadoFlowDisplayService.exe` is the
+LocalSystem owner of the software-device handle. `LadoFlowVirtualDisplay.exe`
+is an ordinary-user JSON client for `start`, `status`, and `stop`; it reaches the
+service through a fixed-size pipe protocol that rejects remote clients, checks
+reserved fields and correlation IDs, and verifies the server PID against SCM.
+The remaining host integration must cover:
 
 - connect/disconnect virtual monitor;
 - supported modes and active mode;

@@ -33,7 +33,7 @@ LadoFlow 的目标，是让 Windows、macOS 和 Linux 电脑把 Android 平板/�
 | 共享运行时 | 能力协商、会话、重连策略、遥测、帧调度和内存 loopback 已实现 | 被所有主机端与显示端复用的跨平台运行时 |
 | 桌面主机端 | Tauri 2 loopback 与诊断界面可运行 | 同一外壳按目标系统接入原生服务 |
 | macOS 主机端 | 权限/显示器发现、真实 ScreenCaptureKit IOSurface 探测和本地 `.app` 已实现 | 长时 capture/VideoToolbox 管线、原生虚拟显示适配和公证 Host |
-| Windows 主机端 | 已实机验证采集、GPU H.264 和输入回传；单屏 IddCx 驱动及生命周期控制器已通过构建验证 | 可信安装、自动选择虚拟屏、干净系统恢复测试和正式签名 |
+| Windows 主机端 | 已实机验证采集、GPU H.264 和输入回传；单屏 IddCx 驱动、LocalSystem 生命周期服务及受限 IPC 客户端已通过构建验证 | 可信安装、自动选择虚拟屏、干净系统恢复测试和正式签名 |
 | Linux 主机端 | 仅完成架构设计 | Wayland、X11、DRM 兼容路径 |
 | Android 显示端 | 仅完成架构设计 | Kotlin 原生接收、硬解和触控回传 |
 | iOS/iPadOS 显示端 | 仅完成架构设计 | Swift 原生接收、硬解和触控回传 |

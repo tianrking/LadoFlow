@@ -3,9 +3,10 @@
 This directory contains the native Windows 11 x64 virtual-display boundary:
 
 - `driver/` is a UMDF 2 Indirect Display Driver built on IddCx;
-- `controller/` owns the software-device handle and exposes deterministic
-  `start`, `status`, and `stop` commands;
-- `build.ps1` restores pinned WDK packages, builds both projects, runs the
+- `service/` is the LocalSystem process that exclusively owns `HSWDEVICE`;
+- `controller/` is an unprivileged, machine-readable service client;
+- `common/Protocol.h` is the fixed-size versioned local IPC contract;
+- `build.ps1` restores pinned WDK packages, builds all three binaries, runs the
   Universal API validator, validates the generated INF, creates the catalog,
   smoke-tests the controller, and assembles a development artifact.
 
@@ -66,13 +67,19 @@ platform/windows/idd/dist/Release/x64/
 │   └── LadoFlowIdd.inf
 ├── symbols/
 ├── LadoFlowIdd.cer                 # development certificate, when generated
+├── LadoFlowDisplayService.exe
 └── LadoFlowVirtualDisplay.exe
 ```
 
-## Lifecycle controller
+## Privileged lifecycle boundary
 
-The controller always prints one JSON object, so the Tauri host can consume it
-without scraping localized text:
+`LadoFlowDisplayService.exe` is designed to run as a Windows service under
+LocalSystem. It is the only process that calls `SwDeviceCreate` and retains the
+software-device handle. The Tauri host never loads driver code and never needs
+an elevated webview process.
+
+`LadoFlowVirtualDisplay.exe` is the ordinary-user client. It always prints one
+JSON object, so the Tauri host can consume it without scraping localized text:
 
 ```powershell
 .\LadoFlowVirtualDisplay.exe status
@@ -80,11 +87,19 @@ without scraping localized text:
 .\LadoFlowVirtualDisplay.exe stop
 ```
 
-`start` launches a no-window owner process and waits up to 25 seconds for the
-PnP result. `status` reports `starting`, `running`, `stopping`, `failed`, or
-`stopped`, plus PID, HRESULT, and device instance ID. `stop` signals the owner,
-which closes `HSWDEVICE`; no orphan virtual monitor should remain after a clean
-shutdown. A named mutex prevents duplicate owners.
+`start` asks SCM to start the installed service when permitted, then sends an
+`Enable` request. `status` is side-effect free. `stop` sends `Disable` but keeps
+the service available for the next cable/session. JSON distinguishes SCM state,
+request result, persistent device error, service PID, generation, and PnP device
+instance ID. If the service is not installed, `status` succeeds while reporting
+`serviceInstalled: false` and `0x80070424`.
+
+The v1 pipe protocol has exact request/response sizes, a magic value, version,
+command, correlation ID, reserved-field checks, and a 5-second client-I/O bound.
+The server rejects remote clients, uses an explicit DACL that grants only the
+required client rights to interactive users, and keeps the first/only pipe
+instance open. The client verifies that the pipe server PID is the same PID SCM
+reports for `LadoFlowVirtualDisplayService` before sending a command.
 
 ## Controlled development installation
 
@@ -93,11 +108,15 @@ to trust stores, enable Windows test-signing mode, disable Secure Boot, or edit
 boot configuration. Those are machine security changes and must be performed
 only on an isolated development machine after explicit approval.
 
-Once an appropriately trusted package is available, installation from an
-elevated PowerShell is:
+Once an appropriately trusted package is available, a controlled development
+installation from an elevated PowerShell is:
 
 ```powershell
 pnputil /add-driver .\driver\LadoFlowIdd.inf /install
+$serviceBinary = (Resolve-Path .\LadoFlowDisplayService.exe).Path
+sc.exe create LadoFlowVirtualDisplayService binPath= "`"$serviceBinary`" service" start= auto obj= LocalSystem DisplayName= "LadoFlow Virtual Display Service"
+sc.exe description LadoFlowVirtualDisplayService "Owns the local LadoFlow indirect display lifecycle."
+sc.exe start LadoFlowVirtualDisplayService
 .\LadoFlowVirtualDisplay.exe start
 .\LadoFlowVirtualDisplay.exe status
 ```
@@ -106,13 +125,17 @@ Stop the virtual device before removing the package:
 
 ```powershell
 .\LadoFlowVirtualDisplay.exe stop
+sc.exe stop LadoFlowVirtualDisplayService
+sc.exe delete LadoFlowVirtualDisplayService
 pnputil /enum-drivers
 pnputil /delete-driver oemNN.inf /uninstall
 ```
 
 Replace `oemNN.inf` only with the published name that `pnputil /enum-drivers`
-shows for `LadoFlow Project`. Production distribution additionally requires a
-Microsoft-accepted release signature and installer/service integration.
+shows for `LadoFlow Project`. These commands are documentation, not actions
+performed by the build. Production distribution additionally requires a
+Microsoft-accepted release signature, recovery-configured service registration,
+and installer-managed rollback.
 
 ## Release gates
 

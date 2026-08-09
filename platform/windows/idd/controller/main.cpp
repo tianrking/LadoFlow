@@ -1,51 +1,35 @@
 #include <windows.h>
-#include <swdevice.h>
 
 #include <array>
 #include <cstdint>
+#include <cwchar>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
+
+#include "Protocol.h"
 
 namespace
 {
-    constexpr wchar_t kMutexName[] = L"Local\\LadoFlow.VirtualDisplay.Controller";
-    constexpr wchar_t kStartMutexName[] = L"Local\\LadoFlow.VirtualDisplay.Start";
-    constexpr wchar_t kStopEventName[] = L"Local\\LadoFlow.VirtualDisplay.Stop";
-    constexpr wchar_t kReadyEventName[] = L"Local\\LadoFlow.VirtualDisplay.Ready";
-    constexpr wchar_t kStateMappingName[] = L"Local\\LadoFlow.VirtualDisplay.State";
-    constexpr std::uint32_t kStateMagic = 0x4C464944; // LFID
-    constexpr std::uint32_t kStateVersion = 1;
+    namespace Ipc = LadoFlow::VirtualDisplay::Ipc;
 
-    enum class RuntimeState : LONG
-    {
-        Starting = 1,
-        Running = 2,
-        Stopping = 3,
-        Failed = 4,
-    };
-
-    struct SharedState
-    {
-        std::uint32_t Magic;
-        std::uint32_t Version;
-        DWORD ProcessId;
-        volatile LONG State;
-        HRESULT LastError;
-        wchar_t DeviceInstanceId[256];
-    };
+    constexpr DWORD kServiceStartTimeoutMs = 15'000;
+    constexpr DWORD kPipeWaitTimeoutMs = 5'000;
+    constexpr DWORD kPipeClientAccess = FILE_READ_DATA | FILE_WRITE_DATA |
+                                        FILE_READ_EA | FILE_WRITE_EA |
+                                        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES |
+                                        READ_CONTROL | SYNCHRONIZE;
+    static_assert(kPipeClientAccess == 0x0012019b);
 
     class UniqueHandle final
     {
     public:
         UniqueHandle() noexcept = default;
         explicit UniqueHandle(HANDLE value) noexcept : m_value(value) {}
-        ~UniqueHandle()
-        {
-            reset();
-        }
+        ~UniqueHandle() { reset(); }
 
         UniqueHandle(const UniqueHandle&) = delete;
         UniqueHandle& operator=(const UniqueHandle&) = delete;
@@ -84,113 +68,64 @@ namespace
         HANDLE m_value{};
     };
 
-    class StateView final
+    class UniqueServiceHandle final
     {
     public:
-        StateView() noexcept = default;
-        ~StateView()
+        UniqueServiceHandle() noexcept = default;
+        explicit UniqueServiceHandle(SC_HANDLE value) noexcept : m_value(value) {}
+        ~UniqueServiceHandle()
         {
-            if (m_state != nullptr)
+            if (m_value != nullptr)
             {
-                UnmapViewOfFile(m_state);
+                CloseServiceHandle(m_value);
             }
         }
 
-        StateView(const StateView&) = delete;
-        StateView& operator=(const StateView&) = delete;
+        UniqueServiceHandle(const UniqueServiceHandle&) = delete;
+        UniqueServiceHandle& operator=(const UniqueServiceHandle&) = delete;
 
-        bool create() noexcept
+        UniqueServiceHandle(UniqueServiceHandle&& other) noexcept
+            : m_value(other.release())
         {
-            m_mapping.reset(CreateFileMappingW(
-                INVALID_HANDLE_VALUE,
-                nullptr,
-                PAGE_READWRITE,
-                0,
-                sizeof(SharedState),
-                kStateMappingName));
-            return map(FILE_MAP_ALL_ACCESS);
+        }
+        UniqueServiceHandle& operator=(UniqueServiceHandle&& other) noexcept
+        {
+            if (this != &other)
+            {
+                reset(other.release());
+            }
+            return *this;
         }
 
-        bool open() noexcept
-        {
-            m_mapping.reset(OpenFileMappingW(FILE_MAP_READ, FALSE, kStateMappingName));
-            return map(FILE_MAP_READ);
-        }
+        SC_HANDLE get() const noexcept { return m_value; }
+        explicit operator bool() const noexcept { return m_value != nullptr; }
 
-        SharedState* get() const noexcept { return m_state; }
+        SC_HANDLE release() noexcept
+        {
+            SC_HANDLE value = m_value;
+            m_value = nullptr;
+            return value;
+        }
+        void reset(SC_HANDLE value = nullptr) noexcept
+        {
+            if (m_value != nullptr)
+            {
+                CloseServiceHandle(m_value);
+            }
+            m_value = value;
+        }
 
     private:
-        bool map(DWORD access) noexcept
-        {
-            if (!m_mapping)
-            {
-                return false;
-            }
-            m_state = static_cast<SharedState*>(
-                MapViewOfFile(m_mapping.get(), access, 0, 0, sizeof(SharedState)));
-            return m_state != nullptr;
-        }
-
-        UniqueHandle m_mapping;
-        SharedState* m_state{};
+        SC_HANDLE m_value{};
     };
 
-    class MutexGuard final
+    struct ServiceSnapshot
     {
-    public:
-        bool acquire(PCWSTR name, DWORD timeout) noexcept
-        {
-            m_mutex.reset(CreateMutexW(nullptr, FALSE, name));
-            if (!m_mutex)
-            {
-                return false;
-            }
-            const DWORD waitResult = WaitForSingleObject(m_mutex.get(), timeout);
-            m_locked = waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED;
-            return m_locked;
-        }
-
-        ~MutexGuard()
-        {
-            if (m_locked)
-            {
-                ReleaseMutex(m_mutex.get());
-            }
-        }
-
-        MutexGuard(const MutexGuard&) = delete;
-        MutexGuard& operator=(const MutexGuard&) = delete;
-        MutexGuard() noexcept = default;
-
-    private:
-        UniqueHandle m_mutex;
-        bool m_locked{};
+        bool Installed{};
+        DWORD State{SERVICE_STOPPED};
+        DWORD ProcessId{};
+        DWORD Win32ExitCode{};
     };
-
-    struct CreationContext
-    {
-        HANDLE CompletedEvent;
-        SharedState* State;
-    };
-
-    HANDLE g_stopEvent{};
-
-    const wchar_t* StateName(LONG state) noexcept
-    {
-        switch (static_cast<RuntimeState>(state))
-        {
-        case RuntimeState::Starting:
-            return L"starting";
-        case RuntimeState::Running:
-            return L"running";
-        case RuntimeState::Stopping:
-            return L"stopping";
-        case RuntimeState::Failed:
-            return L"failed";
-        default:
-            return L"stopped";
-        }
-    }
 
     std::wstring EscapeJson(std::wstring_view value)
     {
@@ -221,315 +156,349 @@ namespace
         return output.str();
     }
 
-    void PrintState(const SharedState* state, bool changed)
+    std::wstring FormatResult(std::int32_t result)
     {
-        if (state == nullptr || state->Magic != kStateMagic || state->Version != kStateVersion)
-        {
-            std::wcout << L"{\"state\":\"stopped\",\"pid\":0,\"lastError\":\"0x00000000\","
-                          L"\"deviceInstanceId\":\"\",\"changed\":"
-                       << (changed ? L"true" : L"false") << L"}\n";
-            return;
-        }
-
-        std::wostringstream error;
-        error << L"0x" << std::uppercase << std::hex << std::setw(8) << std::setfill(L'0')
-              << static_cast<unsigned long>(state->LastError);
-        std::wcout << L"{\"state\":\"" << StateName(state->State)
-                   << L"\",\"pid\":" << state->ProcessId
-                   << L",\"lastError\":\"" << error.str()
-                   << L"\",\"deviceInstanceId\":\"" << EscapeJson(state->DeviceInstanceId)
-                   << L"\",\"changed\":" << (changed ? L"true" : L"false") << L"}\n";
+        std::wostringstream output;
+        output << L"0x" << std::uppercase << std::hex << std::setw(8)
+               << std::setfill(L'0') << static_cast<std::uint32_t>(result);
+        return output.str();
     }
 
-    BOOL WINAPI ConsoleControlHandler(DWORD controlType)
+    const wchar_t* ScmStateName(DWORD state) noexcept
     {
-        switch (controlType)
+        switch (state)
         {
-        case CTRL_C_EVENT:
-        case CTRL_BREAK_EVENT:
-        case CTRL_CLOSE_EVENT:
-        case CTRL_LOGOFF_EVENT:
-        case CTRL_SHUTDOWN_EVENT:
-            if (g_stopEvent != nullptr)
-            {
-                SetEvent(g_stopEvent);
-                return TRUE;
-            }
-            break;
+        case SERVICE_START_PENDING:
+            return L"starting";
+        case SERVICE_RUNNING:
+            return L"running";
+        case SERVICE_STOP_PENDING:
+            return L"stopping";
+        case SERVICE_PAUSED:
+        case SERVICE_PAUSE_PENDING:
+            return L"paused";
+        case SERVICE_CONTINUE_PENDING:
+            return L"continuing";
         default:
-            break;
+            return L"stopped";
         }
-        return FALSE;
     }
 
-    VOID WINAPI CreationCallback(
-        HSWDEVICE device,
-        HRESULT createResult,
-        PVOID contextValue,
-        PCWSTR deviceInstanceId)
+    void PrintUnavailable(const ServiceSnapshot& service, HRESULT result, bool changed)
     {
-        UNREFERENCED_PARAMETER(device);
-        auto* context = static_cast<CreationContext*>(contextValue);
-        context->State->LastError = createResult;
-        if (SUCCEEDED(createResult))
-        {
-            if (deviceInstanceId != nullptr)
-            {
-                wcsncpy_s(
-                    context->State->DeviceInstanceId,
-                    deviceInstanceId,
-                    _TRUNCATE);
-            }
-            InterlockedExchange(&context->State->State, static_cast<LONG>(RuntimeState::Running));
-        }
-        else
-        {
-            InterlockedExchange(&context->State->State, static_cast<LONG>(RuntimeState::Failed));
-        }
-        SetEvent(context->CompletedEvent);
+        std::wcout << L"{\"protocolVersion\":" << static_cast<unsigned>(Ipc::kVersion)
+                   << L",\"serviceInstalled\":" << (service.Installed ? L"true" : L"false")
+                   << L",\"serviceState\":\"" << ScmStateName(service.State)
+                   << L"\",\"state\":\"unavailable\",\"pid\":" << service.ProcessId
+                   << L",\"requestResult\":\"" << FormatResult(static_cast<std::int32_t>(result))
+                   << L"\",\"lastError\":\"" << FormatResult(static_cast<std::int32_t>(result))
+                   << L"\",\"deviceInstanceId\":\"\",\"generation\":0,\"changed\":"
+                   << (changed ? L"true" : L"false") << L"}\n";
     }
 
-    int RunDaemon()
+    void PrintResponse(const ServiceSnapshot& service, const Ipc::Response& response)
     {
-        UniqueHandle ownership(CreateMutexW(nullptr, TRUE, kMutexName));
-        if (!ownership)
+        const auto state = static_cast<Ipc::ServiceState>(response.StateValue);
+        std::wcout << L"{\"protocolVersion\":" << static_cast<unsigned>(response.Version)
+                   << L",\"serviceInstalled\":true,\"serviceState\":\""
+                   << ScmStateName(service.State)
+                   << L"\",\"state\":\"" << Ipc::StateName(state)
+                   << L"\",\"pid\":" << response.ServiceProcessId
+                   << L",\"requestResult\":\"" << FormatResult(response.RequestResult)
+                   << L"\",\"lastError\":\"" << FormatResult(response.LastError)
+                   << L"\",\"deviceInstanceId\":\""
+                   << EscapeJson(response.DeviceInstanceId)
+                   << L"\",\"generation\":" << response.Generation
+                   << L",\"changed\":" << (response.Changed != 0 ? L"true" : L"false")
+                   << L"}\n";
+    }
+
+    bool QueryService(
+        DWORD desiredAccess,
+        UniqueServiceHandle& manager,
+        UniqueServiceHandle& service,
+        ServiceSnapshot& snapshot) noexcept
+    {
+        manager = UniqueServiceHandle(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+        if (!manager)
         {
-            return 20;
+            snapshot.Win32ExitCode = GetLastError();
+            return false;
         }
-        if (GetLastError() == ERROR_ALREADY_EXISTS)
+
+        service = UniqueServiceHandle(OpenServiceW(
+            manager.get(), Ipc::kServiceName, desiredAccess | SERVICE_QUERY_STATUS));
+        if (!service)
         {
-            UniqueHandle readyEvent(OpenEventW(EVENT_MODIFY_STATE, FALSE, kReadyEventName));
-            if (readyEvent)
+            snapshot.Win32ExitCode = GetLastError();
+            snapshot.Installed = snapshot.Win32ExitCode != ERROR_SERVICE_DOES_NOT_EXIST;
+            return false;
+        }
+        snapshot.Installed = true;
+
+        SERVICE_STATUS_PROCESS status{};
+        DWORD bytesNeeded{};
+        if (!QueryServiceStatusEx(
+                service.get(),
+                SC_STATUS_PROCESS_INFO,
+                reinterpret_cast<LPBYTE>(&status),
+                sizeof(status),
+                &bytesNeeded))
+        {
+            snapshot.Win32ExitCode = GetLastError();
+            return false;
+        }
+        snapshot.State = status.dwCurrentState;
+        snapshot.ProcessId = status.dwProcessId;
+        snapshot.Win32ExitCode = status.dwWin32ExitCode;
+        return true;
+    }
+
+    bool RefreshService(SC_HANDLE service, ServiceSnapshot& snapshot) noexcept
+    {
+        SERVICE_STATUS_PROCESS status{};
+        DWORD bytesNeeded{};
+        if (!QueryServiceStatusEx(
+                service,
+                SC_STATUS_PROCESS_INFO,
+                reinterpret_cast<LPBYTE>(&status),
+                sizeof(status),
+                &bytesNeeded))
+        {
+            snapshot.Win32ExitCode = GetLastError();
+            return false;
+        }
+        snapshot.State = status.dwCurrentState;
+        snapshot.ProcessId = status.dwProcessId;
+        snapshot.Win32ExitCode = status.dwWin32ExitCode;
+        return true;
+    }
+
+    HRESULT EnsureServiceRunning(UniqueServiceHandle& service, ServiceSnapshot& snapshot) noexcept
+    {
+        const ULONGLONG deadline = GetTickCount64() + kServiceStartTimeoutMs;
+        bool startAttempted{};
+        do
+        {
+            if (snapshot.State == SERVICE_RUNNING)
             {
-                SetEvent(readyEvent.get());
+                return S_OK;
             }
-            return 0;
-        }
-
-        StateView stateView;
-        if (!stateView.create())
-        {
-            return 21;
-        }
-        auto* state = stateView.get();
-        ZeroMemory(state, sizeof(*state));
-        state->Magic = kStateMagic;
-        state->Version = kStateVersion;
-        state->ProcessId = GetCurrentProcessId();
-        state->State = static_cast<LONG>(RuntimeState::Starting);
-
-        UniqueHandle stopEvent(CreateEventW(nullptr, TRUE, FALSE, kStopEventName));
-        UniqueHandle readyEvent(CreateEventW(nullptr, TRUE, FALSE, kReadyEventName));
-        if (!stopEvent || !readyEvent)
-        {
-            state->LastError = HRESULT_FROM_WIN32(GetLastError());
-            state->State = static_cast<LONG>(RuntimeState::Failed);
-            if (readyEvent)
+            if (snapshot.State == SERVICE_STOPPED)
             {
-                SetEvent(readyEvent.get());
+                if (startAttempted)
+                {
+                    return HRESULT_FROM_WIN32(
+                        snapshot.Win32ExitCode == ERROR_SUCCESS
+                            ? ERROR_SERVICE_NOT_ACTIVE
+                            : snapshot.Win32ExitCode);
+                }
+                if (!StartServiceW(service.get(), 0, nullptr))
+                {
+                    const DWORD error = GetLastError();
+                    if (error != ERROR_SERVICE_ALREADY_RUNNING)
+                    {
+                        return HRESULT_FROM_WIN32(error);
+                    }
+                }
+                startAttempted = true;
             }
-            return 22;
+            Sleep(100);
+            if (!RefreshService(service.get(), snapshot))
+            {
+                return HRESULT_FROM_WIN32(snapshot.Win32ExitCode);
+            }
+        } while (GetTickCount64() < deadline);
+        return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+    }
+
+    std::uint64_t NextCorrelationId() noexcept
+    {
+        LARGE_INTEGER counter{};
+        QueryPerformanceCounter(&counter);
+        const auto value = static_cast<std::uint64_t>(counter.QuadPart) ^
+                           (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32) ^
+                           GetTickCount64();
+        return value == 0 ? 1 : value;
+    }
+
+    HRESULT CallService(
+        Ipc::Command command,
+        const ServiceSnapshot& service,
+        Ipc::Response& response) noexcept
+    {
+        if (service.State != SERVICE_RUNNING || service.ProcessId == 0)
+        {
+            return HRESULT_FROM_WIN32(ERROR_SERVICE_NOT_ACTIVE);
         }
-        ResetEvent(stopEvent.get());
-        ResetEvent(readyEvent.get());
+        if (!WaitNamedPipeW(Ipc::kPipeName, kPipeWaitTimeoutMs))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
 
-        g_stopEvent = stopEvent.get();
-        SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);
-
-        constexpr wchar_t hardwareIds[] = L"LadoFlowVirtualDisplay\0";
-        SW_DEVICE_CREATE_INFO createInfo{};
-        createInfo.cbSize = sizeof(createInfo);
-        createInfo.pszzCompatibleIds = hardwareIds;
-        createInfo.pszInstanceId = L"LadoFlowVirtualDisplay";
-        createInfo.pszzHardwareIds = hardwareIds;
-        createInfo.pszDeviceDescription = L"LadoFlow Virtual Display Adapter";
-        createInfo.CapabilityFlags = SWDeviceCapabilitiesRemovable |
-                                     SWDeviceCapabilitiesSilentInstall |
-                                     SWDeviceCapabilitiesDriverRequired;
-
-        CreationContext context{readyEvent.get(), state};
-        HSWDEVICE softwareDevice{};
-        HRESULT result = SwDeviceCreate(
-            L"LadoFlowVirtualDisplay",
-            L"HTREE\\ROOT\\0",
-            &createInfo,
+        UniqueHandle pipe(CreateFileW(
+            Ipc::kPipeName,
+            kPipeClientAccess,
             0,
             nullptr,
-            CreationCallback,
-            &context,
-            &softwareDevice);
-        if (FAILED(result))
+            OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            nullptr));
+        if (!pipe)
         {
-            state->LastError = result;
-            state->State = static_cast<LONG>(RuntimeState::Failed);
-            SetEvent(readyEvent.get());
-            return 23;
+            return HRESULT_FROM_WIN32(GetLastError());
         }
 
-        const DWORD creationWait = WaitForSingleObject(readyEvent.get(), 20'000);
-        if (creationWait != WAIT_OBJECT_0 || state->State != static_cast<LONG>(RuntimeState::Running))
+        ULONG serverProcessId{};
+        if (!GetNamedPipeServerProcessId(pipe.get(), &serverProcessId))
         {
-            if (creationWait != WAIT_OBJECT_0)
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+        if (serverProcessId != service.ProcessId)
+        {
+            return E_ACCESSDENIED;
+        }
+
+        DWORD mode = PIPE_READMODE_MESSAGE;
+        if (!SetNamedPipeHandleState(pipe.get(), &mode, nullptr, nullptr))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        const Ipc::Request request = Ipc::MakeRequest(command, NextCorrelationId());
+        DWORD bytesRead{};
+        if (!TransactNamedPipe(
+                pipe.get(),
+                const_cast<Ipc::Request*>(&request),
+                sizeof(request),
+                &response,
+                sizeof(response),
+                &bytesRead,
+                nullptr))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+        if (bytesRead != sizeof(response) || !Ipc::ValidateResponse(request, response))
+        {
+            return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+        }
+        return S_OK;
+    }
+
+    int Execute(Ipc::Command command, bool startService)
+    {
+        UniqueServiceHandle manager;
+        UniqueServiceHandle service;
+        ServiceSnapshot snapshot{};
+        if (!QueryService(0, manager, service, snapshot))
+        {
+            const HRESULT result = HRESULT_FROM_WIN32(snapshot.Win32ExitCode);
+            PrintUnavailable(snapshot, result, false);
+            if (command == Ipc::Command::Status)
             {
-                state->LastError = HRESULT_FROM_WIN32(
-                    creationWait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError());
-                state->State = static_cast<LONG>(RuntimeState::Failed);
-                SetEvent(readyEvent.get());
-            }
-            SwDeviceClose(softwareDevice);
-            return 24;
-        }
-
-        WaitForSingleObject(stopEvent.get(), INFINITE);
-        InterlockedExchange(&state->State, static_cast<LONG>(RuntimeState::Stopping));
-        SwDeviceClose(softwareDevice);
-        SetConsoleCtrlHandler(ConsoleControlHandler, FALSE);
-        g_stopEvent = nullptr;
-        return 0;
-    }
-
-    std::wstring ExecutablePath()
-    {
-        std::array<wchar_t, 32'768> path{};
-        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-        if (length == 0 || length >= path.size())
-        {
-            return {};
-        }
-        return std::wstring(path.data(), length);
-    }
-
-    bool ReadCurrentState(StateView& view)
-    {
-        return view.open() && view.get()->Magic == kStateMagic && view.get()->Version == kStateVersion;
-    }
-
-    int Start()
-    {
-        MutexGuard startGuard;
-        if (!startGuard.acquire(kStartMutexName, 30'000))
-        {
-            return 29;
-        }
-
-        StateView existing;
-        if (ReadCurrentState(existing) &&
-            existing.get()->State != static_cast<LONG>(RuntimeState::Failed))
-        {
-            PrintState(existing.get(), false);
-            return 0;
-        }
-
-        UniqueHandle readyEvent(CreateEventW(nullptr, TRUE, FALSE, kReadyEventName));
-        if (!readyEvent)
-        {
-            return 30;
-        }
-        ResetEvent(readyEvent.get());
-
-        StateView state;
-        if (!state.create())
-        {
-            return 31;
-        }
-        ZeroMemory(state.get(), sizeof(*state.get()));
-        state.get()->Magic = kStateMagic;
-        state.get()->Version = kStateVersion;
-        state.get()->State = static_cast<LONG>(RuntimeState::Starting);
-
-        const std::wstring executable = ExecutablePath();
-        if (executable.empty())
-        {
-            return 32;
-        }
-        std::wstring commandLine = L"\"" + executable + L"\" run";
-        STARTUPINFOW startup{};
-        startup.cb = sizeof(startup);
-        PROCESS_INFORMATION process{};
-        if (!CreateProcessW(
-                executable.c_str(),
-                commandLine.data(),
-                nullptr,
-                nullptr,
-                FALSE,
-                CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-                nullptr,
-                nullptr,
-                &startup,
-                &process))
-        {
-            return 33;
-        }
-        UniqueHandle processHandle(process.hProcess);
-        UniqueHandle threadHandle(process.hThread);
-
-        const DWORD waitResult = WaitForSingleObject(readyEvent.get(), 25'000);
-        if (waitResult != WAIT_OBJECT_0)
-        {
-            UniqueHandle stopEvent(OpenEventW(EVENT_MODIFY_STATE, FALSE, kStopEventName));
-            if (stopEvent)
-            {
-                SetEvent(stopEvent.get());
-            }
-            PrintState(state.get(), false);
-            return 34;
-        }
-
-        PrintState(state.get(), true);
-        return state.get()->State == static_cast<LONG>(RuntimeState::Running) ? 0 : 35;
-    }
-
-    int Stop()
-    {
-        UniqueHandle stopEvent(OpenEventW(EVENT_MODIFY_STATE, FALSE, kStopEventName));
-        if (!stopEvent)
-        {
-            PrintState(nullptr, false);
-            return 0;
-        }
-        if (!SetEvent(stopEvent.get()))
-        {
-            return 40;
-        }
-
-        constexpr DWORD timeoutMs = 10'000;
-        constexpr DWORD pollMs = 100;
-        for (DWORD elapsed = 0; elapsed < timeoutMs; elapsed += pollMs)
-        {
-            StateView state;
-            if (!ReadCurrentState(state))
-            {
-                PrintState(nullptr, true);
                 return 0;
             }
-            Sleep(pollMs);
+            return snapshot.Win32ExitCode == ERROR_SERVICE_DOES_NOT_EXIST ? 20 : 21;
         }
 
-        StateView state;
-        if (ReadCurrentState(state))
+        if (startService)
         {
-            PrintState(state.get(), false);
+            if (snapshot.State == SERVICE_STOPPED || snapshot.State == SERVICE_STOP_PENDING)
+            {
+                UniqueServiceHandle startable(OpenServiceW(
+                    manager.get(),
+                    Ipc::kServiceName,
+                    SERVICE_QUERY_STATUS | SERVICE_START));
+                if (!startable)
+                {
+                    const HRESULT result = HRESULT_FROM_WIN32(GetLastError());
+                    PrintUnavailable(snapshot, result, false);
+                    return 22;
+                }
+                service = std::move(startable);
+            }
+            const HRESULT startResult = EnsureServiceRunning(service, snapshot);
+            if (FAILED(startResult))
+            {
+                PrintUnavailable(snapshot, startResult, false);
+                return 22;
+            }
         }
-        return 41;
+        else if (snapshot.State != SERVICE_RUNNING)
+        {
+            PrintUnavailable(
+                snapshot,
+                HRESULT_FROM_WIN32(ERROR_SERVICE_NOT_ACTIVE),
+                false);
+            return command == Ipc::Command::Status ? 0 : 23;
+        }
+
+        Ipc::Response response{};
+        const HRESULT callResult = CallService(command, snapshot, response);
+        if (FAILED(callResult))
+        {
+            PrintUnavailable(snapshot, callResult, false);
+            return 24;
+        }
+        PrintResponse(snapshot, response);
+        return SUCCEEDED(response.RequestResult) ? 0 : 25;
     }
 
-    int Status()
+    bool RunSelfTest()
     {
-        StateView state;
-        if (ReadCurrentState(state))
+        const Ipc::Request request = Ipc::MakeRequest(Ipc::Command::Status, 17);
+        const Ipc::Response response = Ipc::MakeResponse(
+            request, Ipc::ServiceState::Enabled, S_OK, S_OK, 123, 8, true);
+        if (!Ipc::ValidateRequest(request) || !Ipc::ValidateResponse(request, response))
         {
-            PrintState(state.get(), false);
+            return false;
         }
-        else
+        Ipc::Response invalidResponse = response;
+        ++invalidResponse.CorrelationId;
+        if (Ipc::ValidateResponse(request, invalidResponse))
         {
-            PrintState(nullptr, false);
+            return false;
         }
-        return 0;
+        invalidResponse = response;
+        ++invalidResponse.Magic;
+        if (Ipc::ValidateResponse(request, invalidResponse))
+        {
+            return false;
+        }
+        invalidResponse = response;
+        ++invalidResponse.Version;
+        if (Ipc::ValidateResponse(request, invalidResponse))
+        {
+            return false;
+        }
+        invalidResponse = response;
+        --invalidResponse.Size;
+        if (Ipc::ValidateResponse(request, invalidResponse))
+        {
+            return false;
+        }
+        invalidResponse = response;
+        invalidResponse.StateValue = 99;
+        if (Ipc::ValidateResponse(request, invalidResponse))
+        {
+            return false;
+        }
+        invalidResponse = response;
+        invalidResponse.Changed = 2;
+        if (Ipc::ValidateResponse(request, invalidResponse))
+        {
+            return false;
+        }
+        invalidResponse = response;
+        invalidResponse.Reserved = 1;
+        return !Ipc::ValidateResponse(request, invalidResponse) &&
+               EscapeJson(L"a\\b\"c\n") == L"a\\\\b\\\"c\\n" &&
+               FormatResult(E_ACCESSDENIED) == L"0x80070005";
     }
 
     void PrintUsage()
     {
-        std::wcerr << L"Usage: LadoFlowVirtualDisplay <start|stop|status|run>\n";
+        std::wcerr << L"Usage: LadoFlowVirtualDisplay <start|stop|status|self-test>\n";
     }
 }
 
@@ -544,19 +513,23 @@ int wmain(int argumentCount, wchar_t* arguments[])
     const std::wstring_view command(arguments[1]);
     if (command == L"start")
     {
-        return Start();
+        return Execute(Ipc::Command::Enable, true);
     }
     if (command == L"stop" || command == L"remove")
     {
-        return Stop();
+        return Execute(Ipc::Command::Disable, false);
     }
     if (command == L"status")
     {
-        return Status();
+        return Execute(Ipc::Command::Status, false);
     }
-    if (command == L"run")
+    if (command == L"self-test")
     {
-        return RunDaemon();
+        const bool passed = RunSelfTest();
+        std::wcout << L"{\"ok\":" << (passed ? L"true" : L"false")
+                   << L",\"protocolVersion\":" << static_cast<unsigned>(Ipc::kVersion)
+                   << L"}\n";
+        return passed ? 0 : 10;
     }
 
     PrintUsage();

@@ -14,7 +14,7 @@ and installer projects belong here. Follow the concrete ownership and test
 sequence in [`docs/platform-handoff.md`](../docs/platform-handoff.md).
 
 The first privileged component now lives in
-[`windows/idd`](./windows/idd/): a buildable Windows 11 x64 IddCx driver and a
-deterministic software-device lifecycle controller. Its source/build validation
-is complete; trusted installation and physical extended-display validation are
-separate release gates.
+[`windows/idd`](./windows/idd/): a buildable Windows 11 x64 IddCx driver, a
+LocalSystem lifecycle service, and an unprivileged versioned-IPC controller.
+Their source/build validation is complete; trusted installation and physical
+extended-display validation are separate release gates.
