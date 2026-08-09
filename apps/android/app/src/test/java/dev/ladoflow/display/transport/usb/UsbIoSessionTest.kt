@@ -1,9 +1,12 @@
 package dev.ladoflow.display.transport.usb
 
 import dev.ladoflow.display.protocol.FrameFlags
+import dev.ladoflow.display.protocol.IncrementalFrameDecoder
+import dev.ladoflow.display.protocol.InputPayload
 import dev.ladoflow.display.protocol.LdflFrame
 import dev.ladoflow.display.protocol.MessageType
 import dev.ladoflow.display.protocol.PingPayload
+import dev.ladoflow.display.protocol.PointerMoveInput
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -76,6 +79,44 @@ class UsbIoSessionTest {
         session.close()
     }
 
+    @Test
+    fun `writer prioritizes queued control ahead of queued input`() = runBlocking {
+        val input = BlockingInputStream()
+        val output = FirstWriteGatedOutputStream()
+        val session = UsbIoSession(TestConnection(input, output), this)
+        val firstInput = inputFrame(sequence = 1u, x = 10, y = 20)
+        val secondInput = inputFrame(sequence = 2u, x = 30, y = 40)
+        val control = LdflFrame.fromPayload(FrameFlags.None, 3u, PingPayload(50u, 60u))
+
+        session.start()
+        session.sendControl(firstInput)
+        assertTrue(output.firstWriteEntered.await(5, TimeUnit.SECONDS))
+        session.sendControl(secondInput)
+        session.sendControl(control)
+        output.releaseFirstWrite.countDown()
+        assertTrue(output.threeWrites.await(5, TimeUnit.SECONDS))
+
+        val decoded = IncrementalFrameDecoder().push(output.bytes())
+        assertEquals(listOf(firstInput, control, secondInput), decoded)
+        session.close()
+    }
+
+    @Test
+    fun `close closes connection to release a blocking accessory read`() = runBlocking {
+        val input = CloseObservedInputStream()
+        val session = UsbIoSession(
+            TestConnection(input, ByteArrayOutputStream()),
+            this,
+        )
+
+        session.start()
+        assertTrue(input.readEntered.await(5, TimeUnit.SECONDS))
+        session.close()
+
+        assertTrue(input.closed.await(5, TimeUnit.SECONDS))
+        assertEquals(UsbIoSessionState.Closed, session.state.value)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `display endpoint refuses outbound video frames`() = runBlocking {
         val session = UsbIoSession(
@@ -86,6 +127,16 @@ class UsbIoSessionTest {
             LdflFrame(MessageType.VideoFrame, FrameFlags.None, 1uL, byteArrayOf(1)),
         )
     }
+
+    private fun inputFrame(
+        sequence: ULong,
+        x: Int,
+        y: Int,
+    ): LdflFrame = LdflFrame.fromPayload(
+        flags = FrameFlags.None,
+        sequence = sequence,
+        payload = InputPayload(sequence * 1_000u, PointerMoveInput(x, y)),
+    )
 }
 
 private class TestConnection(
@@ -138,6 +189,23 @@ private class BlockingInputStream : InputStream() {
     }
 }
 
+private class CloseObservedInputStream : InputStream() {
+    val readEntered = CountDownLatch(1)
+    val closed = CountDownLatch(1)
+
+    override fun read(): Int {
+        readEntered.countDown()
+        closed.await(30, TimeUnit.SECONDS)
+        return -1
+    }
+
+    override fun read(target: ByteArray, offset: Int, length: Int): Int = read()
+
+    override fun close() {
+        closed.countDown()
+    }
+}
+
 private class SignallingOutputStream : OutputStream() {
     private val delegate = ByteArrayOutputStream()
     val firstWrite = CompletableDeferred<Unit>()
@@ -156,4 +224,34 @@ private class SignallingOutputStream : OutputStream() {
 
     @Synchronized
     fun bytes(): ByteArray = delegate.toByteArray()
+}
+
+private class FirstWriteGatedOutputStream : OutputStream() {
+    private val delegate = ByteArrayOutputStream()
+    private var writes = 0
+    val firstWriteEntered = CountDownLatch(1)
+    val releaseFirstWrite = CountDownLatch(1)
+    val threeWrites = CountDownLatch(1)
+
+    override fun write(value: Int) {
+        write(byteArrayOf(value.toByte()), 0, 1)
+    }
+
+    @Synchronized
+    override fun write(bytes: ByteArray, offset: Int, length: Int) {
+        if (writes == 0) {
+            firstWriteEntered.countDown()
+            releaseFirstWrite.await(5, TimeUnit.SECONDS)
+        }
+        delegate.write(bytes, offset, length)
+        writes += 1
+        if (writes >= 3) threeWrites.countDown()
+    }
+
+    @Synchronized
+    fun bytes(): ByteArray = delegate.toByteArray()
+
+    override fun close() {
+        releaseFirstWrite.countDown()
+    }
 }

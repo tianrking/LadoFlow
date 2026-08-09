@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 
 interface UsbDuplexConnection : Closeable {
     val input: InputStream
@@ -54,6 +55,8 @@ class UsbIoSession(
     readBufferBytes: Int = USB_READ_BUFFER_BYTES,
     controlQueueCapacity: Int = 64,
     mediaQueueCapacity: Int = 3,
+    outboundControlQueueCapacity: Int = 32,
+    outboundInputQueueCapacity: Int = 64,
 ) : Closeable {
     private val sessionJob = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(
@@ -62,7 +65,8 @@ class UsbIoSession(
     private val decoder = IncrementalFrameDecoder()
     private val controlInbound = Channel<LdflFrame>(controlQueueCapacity)
     private val mediaInbound = BoundedMediaFrameQueue(mediaQueueCapacity)
-    private val controlOutbound = Channel<LdflFrame>(controlQueueCapacity)
+    private val controlOutbound = Channel<LdflFrame>(outboundControlQueueCapacity)
+    private val inputOutbound = Channel<LdflFrame>(outboundInputQueueCapacity)
     private val started = AtomicBoolean(false)
     private val terminated = AtomicBoolean(false)
     private val mutableState = MutableStateFlow<UsbIoSessionState>(UsbIoSessionState.Idle)
@@ -78,6 +82,8 @@ class UsbIoSession(
     init {
         require(readBufferBytes > 0)
         require(controlQueueCapacity > 0)
+        require(outboundControlQueueCapacity > 0)
+        require(outboundInputQueueCapacity > 0)
     }
 
     fun start() {
@@ -91,14 +97,14 @@ class UsbIoSession(
         require(frame.messageType != MessageType.VideoFrame) {
             "Android display transport does not send video frames"
         }
-        controlOutbound.send(frame)
+        outboundChannel(frame).send(frame)
     }
 
     fun trySendControl(frame: LdflFrame): Boolean {
         require(frame.messageType != MessageType.VideoFrame) {
             "Android display transport does not send video frames"
         }
-        return controlOutbound.trySend(frame).isSuccess
+        return outboundChannel(frame).trySend(frame).isSuccess
     }
 
     private suspend fun readLoop() {
@@ -131,7 +137,8 @@ class UsbIoSession(
 
     private suspend fun writeLoop() {
         try {
-            for (frame in controlOutbound) {
+            while (true) {
+                val frame = receiveNextOutbound() ?: return
                 connection.output.write(frame.encode())
                 connection.output.flush()
             }
@@ -141,6 +148,50 @@ class UsbIoSession(
             terminate(UsbIoFailureKind.Io, exception.message ?: "USB write failed")
         }
     }
+
+    /**
+     * Control is intentionally checked before input. Each lane is FIFO and
+     * bounded; the ordered select keeps low-volume session/liveness traffic
+     * from sitting behind a burst of reverse-input events.
+     */
+    private suspend fun receiveNextOutbound(): LdflFrame? {
+        var controlClosed = false
+        var inputClosed = false
+        while (true) {
+            if (!controlClosed) {
+                val control = controlOutbound.tryReceive()
+                if (control.isSuccess) return control.getOrThrow()
+                controlClosed = control.isClosed
+            }
+            if (!inputClosed) {
+                val input = inputOutbound.tryReceive()
+                if (input.isSuccess) return input.getOrThrow()
+                inputClosed = input.isClosed
+            }
+            if (controlClosed && inputClosed) return null
+
+            val selection = select<OutboundSelection> {
+                if (!controlClosed) {
+                    controlOutbound.onReceiveCatching { result ->
+                        OutboundSelection(OutboundLane.Control, result.getOrNull())
+                    }
+                }
+                if (!inputClosed) {
+                    inputOutbound.onReceiveCatching { result ->
+                        OutboundSelection(OutboundLane.Input, result.getOrNull())
+                    }
+                }
+            }
+            if (selection.frame != null) return selection.frame
+            when (selection.lane) {
+                OutboundLane.Control -> controlClosed = true
+                OutboundLane.Input -> inputClosed = true
+            }
+        }
+    }
+
+    private fun outboundChannel(frame: LdflFrame): Channel<LdflFrame> =
+        if (frame.messageType == MessageType.Input) inputOutbound else controlOutbound
 
     private fun terminate(kind: UsbIoFailureKind, message: String) {
         if (!terminated.compareAndSet(false, true)) return
@@ -158,7 +209,18 @@ class UsbIoSession(
         controlInbound.close()
         mediaInbound.close()
         controlOutbound.close()
+        inputOutbound.close()
         runCatching { connection.close() }
         sessionJob.cancel()
     }
+
+    private enum class OutboundLane {
+        Control,
+        Input,
+    }
+
+    private data class OutboundSelection(
+        val lane: OutboundLane,
+        val frame: LdflFrame?,
+    )
 }
