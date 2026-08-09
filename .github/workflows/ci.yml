@@ -8,9 +8,12 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  rust:
-    name: Rust foundation
+  shared-rust:
+    name: Shared Rust foundation
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -25,7 +28,69 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: >-
+          cargo clippy
+          -p ladoflow-protocol
+          -p ladoflow-core
+          -p ladoflow-transport
+          -p ladoflow-media
+          --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace
+        run: >-
+          cargo test
+          -p ladoflow-protocol
+          -p ladoflow-core
+          -p ladoflow-transport
+          -p ladoflow-media
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop frontend
+        run: pnpm check:desktop
+
+      - name: Run desktop Clippy
+        run: cargo clippy -p ladoflow-desktop --all-targets -- -D warnings
+
+      - name: Run desktop tests
+        run: cargo test -p ladoflow-desktop
