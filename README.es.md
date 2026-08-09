@@ -29,13 +29,13 @@ La experiencia final deberá ser sencilla: instalar el host, abrir LadoFlow en l
 
 | Área | Estado actual | Objetivo |
 | --- | --- | --- |
-| Protocolo compartido | Base en desarrollo | Mensajes versionados de control, vídeo, entrada y telemetría |
+| Protocolo compartido | Encuadre binario inicial implementado | Mensajes versionados de control, vídeo, entrada y telemetría |
 | Host Windows | Solo arquitectura | Controlador de pantalla virtual firmado y aplicación host |
 | Host macOS | Solo arquitectura | Adaptador nativo y aplicación notarizada |
 | Host Linux | Solo arquitectura | Integración compatible con Wayland, X11 y DRM |
 | Pantalla Android | Solo arquitectura | Receptor Kotlin nativo con decodificación por hardware |
 | Pantalla iOS/iPadOS | Solo arquitectura | Receptor Swift nativo con decodificación por hardware |
-| Transporte USB | Base en desarrollo | Enlace directo, autenticado y reconectable |
+| Transporte USB | Solo arquitectura | Enlace directo, autenticado y reconectable |
 | Wi-Fi/LAN | Planificado | Conexión local mediante emparejamiento explícito |
 
 La [hoja de ruta](./docs/roadmap.md) es la referencia para el avance verificable.
@@ -67,4 +67,3 @@ cargo test --workspace
 ## Licencia
 
 El código se publica bajo la [licencia MIT](./LICENSE). El nombre y el logotipo identifican al proyecto; su redistribución no debe insinuar el respaldo oficial de LadoFlow.
-

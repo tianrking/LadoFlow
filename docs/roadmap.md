@@ -12,9 +12,10 @@ This roadmap is ordered by evidence, not by marketing surface area.
 
 ## M1 — Protocol and loopback
 
-- [ ] Versioned, bounded wire framing
-- [ ] Capability and display-configuration messages
-- [ ] Malformed-input and round-trip tests
+- [x] Versioned, bounded wire framing
+- [x] Hello and capability messages
+- [ ] Display-configuration message
+- [x] Malformed-input, chunking, and round-trip tests
 - [ ] In-memory duplex transport
 - [ ] Synthetic frame producer/consumer
 - [ ] Latency and frame-pacing telemetry
@@ -64,4 +65,3 @@ This roadmap is ordered by evidence, not by marketing surface area.
 - [ ] Wired/wireless handoff and reconnect tests
 
 Public internet relay is deliberately outside the USB-first roadmap.
-

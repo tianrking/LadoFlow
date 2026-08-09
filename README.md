@@ -44,13 +44,13 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 
 | Area | Current state | Intended result |
 | --- | --- | --- |
-| Shared wire protocol | Foundation in progress | Versioned control, media, input, and telemetry messages |
+| Shared wire protocol | Initial framing implemented | Versioned control, media, input, and telemetry messages |
 | Windows host | Architecture only | Signed virtual display driver and desktop host |
 | macOS host | Architecture only | Native virtual-display adapter and notarized host |
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
 | Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
 | iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
-| USB transport | Foundation in progress | Direct, authenticated device link |
+| USB transport | Architecture only | Direct, authenticated device link |
 | Wi-Fi/LAN transport | Planned after USB | Explicitly paired local connection |
 
 No row above is a release claim. Follow the [roadmap](./docs/roadmap.md) and [GitHub milestones](https://github.com/tianrking/LadoFlow/milestones) for evidence-backed progress.
@@ -130,4 +130,3 @@ The project is early, but architecture discussions, reproducible latency measure
 ## License
 
 LadoFlow is available under the [MIT License](./LICENSE). The name and logo are project identity assets; redistribution must not imply endorsement by the LadoFlow project.
-
