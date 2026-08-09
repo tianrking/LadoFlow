@@ -31,6 +31,11 @@ The LDFL `KEYFRAME` flag remains authoritative. Android also inspects H.264 NAL
 types and reports a diagnostic warning if a flagged keyframe has no IDR NAL,
 but it does not silently reinterpret the wire flag.
 
+Presentation timestamps must fit a signed 64-bit MediaCodec timestamp and
+increase between dependent access units. A duplicate or decreasing timestamp
+invalidates the dependent chain. A later LDFL `KEYFRAME` can establish a fresh
+timestamp baseline and restart the codec without adding a protocol field.
+
 ## Decoder and Surface lifecycle
 
 - Android probes actual AVC Main profile, size, frame-rate, and bitrate ranges;
@@ -41,11 +46,21 @@ but it does not silently reinterpret the wire flag.
 - API 30+ low-latency mode is enabled only when the selected codec advertises
   the platform low-latency feature;
 - all MediaCodec calls and callbacks run on one dedicated `HandlerThread`;
-- pending input is bounded to three access units; overflow drops a dependent
-  chain and waits for the next LDFL keyframe;
+- capacity is reserved before posting to that Handler, so at most eight accepted
+  access units exist across Handler submission, pending codec input, and inputs
+  already queued into MediaCodec;
+- overflow rejects the new access unit, preserves the already accepted and
+  independently valid prefix, then blocks later dependent frames until the next
+  LDFL keyframe; a keyframe restart accounts for every still-discarded access
+  unit;
 - output is released immediately to a caller-owned `SurfaceView` Surface;
-- Surface loss, display reconfiguration, EOS, and codec errors release native
-  codec resources and require a fresh keyframe before recovery.
+- an output timestamp must correlate FIFO-exactly to a queued Host frame ID;
+  unknown output timestamps are not rendered and force keyframe recovery;
+- Surface loss, display reconfiguration, EOS, timestamp discontinuity, and codec
+  errors release native codec resources and require a fresh keyframe before
+  recovery;
+- three consecutive codec recovery attempts are allowed; another failure is a
+  terminal decoder error for that session generation.
 
 The application-level display session owns a generation-numbered Surface
 controller. Each Activity/Compose `SurfaceView` receives one lease. Replacing a
@@ -65,11 +80,23 @@ frame; physical presentation and latency require device-side measurements. The
 event retains the exact Host `VideoFrame.metadata.frame_id` through the Annex-B
 gate and MediaCodec timestamp correlation so session telemetry can report it.
 
+The decoder exposes an authoritative `StateFlow` snapshot rather than deriving
+telemetry from the best-effort diagnostic event stream. It includes exact
+cumulative output/drop counts, full in-flight depth, the last correlated Host
+frame ID, and time from successful codec input queueing to output callback.
+LDFL `Telemetry.timings.decode` carries that measured duration. The current
+implementation sends `presentation=0` because Surface release is not a physical
+scan-out timestamp; it does not fabricate panel latency.
+
 ## Evidence boundary
 
-The Annex-B parser, recovery gate, session Surface gate, capability contract,
-stale-lease protection, local portrait/landscape resize, and Activity recreation
-ownership are covered by JVM or Android instrumentation tests. No phone or
-tablet has decoded this stream yet.
+The Annex-B parser, timestamp/keyframe recovery gate, bounded in-flight ledger,
+session Surface gate, exact telemetry counters, capability contract, stale-lease
+protection, local portrait/landscape resize, and Activity recreation ownership
+are covered by JVM or Android instrumentation tests. The Android-runtime test
+uses a synthetic 64x64 H.264 Main Annex-B IDR access unit with a real
+MediaCodec/Surface, then replaces the Surface and requires another LDFL
+keyframe. Passing on an emulator is not hardware-decoder or physical-device
+evidence.
 
 **未实机验证 / Not verified on a physical Android device.**

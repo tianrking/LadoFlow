@@ -33,6 +33,12 @@ sealed interface VideoDecoderState {
         val backend: VideoDecoderBackend,
     ) : VideoDecoderState
 
+    data class Recovering(
+        val configuration: DisplayConfigPayload,
+        val attempt: Int,
+        val reason: String,
+    ) : VideoDecoderState
+
     data class Failed(
         val message: String,
         val recoverableOnKeyframe: Boolean,
@@ -46,12 +52,14 @@ sealed interface VideoDecoderEvent {
         val frameId: ULong?,
         val reason: DecoderDropReason,
         val detail: String,
+        val count: UInt = 1u,
     ) : VideoDecoderEvent
 
     /** MediaCodec released the decoded buffer to Surface; physical presentation is not implied. */
     data class OutputReleasedToSurface(
-        val frameId: ULong?,
+        val frameId: ULong,
         val presentationTimestampMicros: Long,
+        val decodeDurationMicros: UInt,
     ) : VideoDecoderEvent
 
     data class OutputFormatChanged(
@@ -66,12 +74,21 @@ sealed interface VideoDecoderEvent {
     data object EndOfStream : VideoDecoderEvent
 }
 
+/** Authoritative cumulative decoder snapshot; diagnostic events may be best-effort. */
+data class VideoDecoderMetrics(
+    val outputsReleasedToSurface: Long = 0,
+    val droppedFrames: Long = 0,
+    val queueDepth: Int = 0,
+    val lastReleasedFrameId: ULong? = null,
+    val lastDecodeDurationMicros: UInt? = null,
+)
+
 /** Codec-neutral lifecycle boundary. Version one currently enables only H.264. */
 interface VideoDecoder : Closeable {
     val state: StateFlow<VideoDecoderState>
     val events: SharedFlow<VideoDecoderEvent>
     /** Access units pending input plus codec inputs awaiting output release. */
-    val queueDepth: StateFlow<Int>
+    val metrics: StateFlow<VideoDecoderMetrics>
 
     /** The caller owns [surface] and must send null before it becomes invalid. */
     fun setOutputSurface(surface: Surface?)

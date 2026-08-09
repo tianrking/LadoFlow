@@ -79,12 +79,12 @@ class MediaCodecSurfaceLifecycleTest {
     private class RecordingDecoder : VideoDecoder {
         private val mutableState = MutableStateFlow<VideoDecoderState>(VideoDecoderState.Idle)
         private val mutableEvents = MutableSharedFlow<VideoDecoderEvent>()
-        private val mutableQueueDepth = MutableStateFlow(0)
+        private val mutableMetrics = MutableStateFlow(VideoDecoderMetrics())
         val surfaces = mutableListOf<Surface?>()
 
         override val state: StateFlow<VideoDecoderState> = mutableState.asStateFlow()
         override val events: SharedFlow<VideoDecoderEvent> = mutableEvents.asSharedFlow()
-        override val queueDepth: StateFlow<Int> = mutableQueueDepth.asStateFlow()
+        override val metrics: StateFlow<VideoDecoderMetrics> = mutableMetrics.asStateFlow()
 
         override fun setOutputSurface(surface: Surface?) {
             surfaces += surface

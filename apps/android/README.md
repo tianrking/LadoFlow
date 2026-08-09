@@ -23,21 +23,25 @@ options, accounts, and a cloud relay are not part of the display path.
 - Device/display capability probing and exact H.264 Main size/rate/bitrate
   validation before MediaCodec configuration.
 - Asynchronous MediaCodec Surface decode boundary with Annex-B SPS/PPS parsing,
-  keyframe gating, three-access-unit bounds, Surface recreation, and low-latency
-  feature negotiation when the platform reports it. A process-owned Surface
+  keyframe/discontinuity gating, one eight-access-unit bound spanning Handler
+  admission through codec output, Surface recreation, and low-latency feature
+  negotiation when the platform reports it. A process-owned Surface
   lease prevents a destroyed Activity from clearing a newer Surface, while
   local orientation/size changes remain outside the wire protocol.
 - Pointer, touch, and physical-keyboard return through LDFL Input. The
   focusable decoder SurfaceView forwards key down/up as USB HID usages, and the
   session sends only input families advertised by both endpoints.
 - Telemetry reports the latest Host metadata frame ID released to Surface,
-  session-cumulative drops, and the combined pre-Surface/decoder queue depth.
+  exact session-cumulative batch drops, the combined pre-Surface/decoder queue
+  depth, and measured codec-input-to-output-callback decode time. Physical panel
+  presentation time remains explicitly unmeasured.
 
 Protocol and platform details:
 
 - [display-side session](./docs/session-control.md)
 - [USB accessory handoff](./docs/usb-accessory.md)
 - [MediaCodec boundary](./docs/media-codec.md)
+- [release build boundary](./docs/release-build.md)
 - [input and rotation](./docs/input-and-rotation.md)
 - [physical-device validation](./docs/device-validation.md)
 
@@ -54,22 +58,32 @@ From `apps/android`:
 ```powershell
 $env:JAVA_HOME = "<path-to-jdk-17>"
 $env:ANDROID_SDK_ROOT = "<path-to-android-sdk>"
-./gradlew.bat --no-daemon testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
+./gradlew.bat --no-daemon testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease assembleDebugAndroidTest
 ```
 
 Outputs:
 
 - `app/build/outputs/apk/debug/app-debug.apk`;
 - `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`;
+- `app/build/outputs/apk/release/app-release-unsigned.apk`;
 - `app/build/reports/tests/testDebugUnitTest/index.html`;
-- `app/build/reports/lint-results-debug.html`.
+- `app/build/reports/lint-results-debug.html`;
+- `app/build/reports/lint-results-release.html`.
 
-The repository CI runs the same unit, lint, debug APK, and instrumentation-APK
-assembly tasks. A physical/emulated runtime can run the skeleton with
+The repository CI runs the same unit, lint, debug APK, unsigned release APK, and
+instrumentation-APK assembly tasks. It rebuilds release on the same clean
+runner and requires the two unsigned APK SHA-256 values to match. A physical or
+emulated runtime can run the instrumentation suite with
 `connectedDebugAndroidTest`.
 
+`app-debug.apk` is development-only and uses the local/CI debug signing key.
+`app-release-unsigned.apk` is deliberately unsigned: it contains no repository
+or CI signing secret and cannot be distributed or installed until an external
+release owner signs it. See the release boundary document for the artifact and
+verification contract.
+
 Automated tests and APK assembly do not prove USB permission behavior, AOA
-bulk transfer, MediaCodec output, physical pointer/touch/keyboard return, or
-sustained operation on a phone/tablet.
+bulk transfer, hardware MediaCodec behavior on a phone/tablet, physical
+pointer/touch/keyboard return, or sustained operation on a physical device.
 
 **未实机验证 / Not verified on a physical Android device.**

@@ -42,9 +42,11 @@ host upgrade does not make an existing app undiscoverable.
   next global sequence only after that priority decision, then hands the frame
   to one 64-frame FIFO USB writer. Priority can therefore never reorder frames
   that already have sequence numbers.
-- Pre-Surface and MediaCodec access-unit queues are each bounded to three.
-  Overflow drops the dependent delta chain and waits for a new LDFL frame
-  marked `KEYFRAME`; it never feeds a known-incomplete chain to MediaCodec.
+- The pre-Surface queue is bounded to three. The decoder has a separate single
+  eight-access-unit bound spanning Handler admission, pending codec input, and
+  input already queued into MediaCodec. Overflow drops the dependent delta
+  chain and waits for a new LDFL frame marked `KEYFRAME`; it never feeds a
+  known-incomplete chain to MediaCodec.
 
 ## Lifecycle implemented on Android
 

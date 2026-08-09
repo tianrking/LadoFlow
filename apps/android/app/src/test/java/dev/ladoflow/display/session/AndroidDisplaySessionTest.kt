@@ -3,8 +3,8 @@ package dev.ladoflow.display.session
 import android.view.Surface
 import dev.ladoflow.display.input.InputDelivery
 import dev.ladoflow.display.media.VideoDecoder
-import dev.ladoflow.display.media.DecoderDropReason
 import dev.ladoflow.display.media.VideoDecoderEvent
+import dev.ladoflow.display.media.VideoDecoderMetrics
 import dev.ladoflow.display.media.VideoDecoderState
 import dev.ladoflow.display.protocol.ButtonState
 import dev.ladoflow.display.protocol.CapabilitiesPayload
@@ -141,8 +141,10 @@ class AndroidDisplaySessionTest {
         assertEquals(media, harness.decoder.submitted.single())
         assertTrue(harness.session.state.value is AndroidDisplaySessionState.Connected)
 
-        harness.decoder.eventsMutable.emit(
-            VideoDecoderEvent.OutputReleasedToSurface(7u, 30_000),
+        harness.decoder.mutableMetrics.value = VideoDecoderMetrics(
+            outputsReleasedToSurface = 1,
+            lastReleasedFrameId = 7u,
+            lastDecodeDurationMicros = 2_500u,
         )
         eventually { harness.session.state.value is AndroidDisplaySessionState.Displaying }
         assertEquals(1, harness.session.metrics.value.outputsReleasedToSurface)
@@ -342,23 +344,61 @@ class AndroidDisplaySessionTest {
         harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
         eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
 
-        harness.decoder.mutableQueueDepth.value = 2
-        harness.decoder.eventsMutable.emit(
-            VideoDecoderEvent.FrameDropped(40u, DecoderDropReason.QueueOverflow, "test drop"),
-        )
-        harness.decoder.eventsMutable.emit(
-            VideoDecoderEvent.OutputReleasedToSurface(0x1234u, 30_000),
+        harness.decoder.mutableMetrics.value = VideoDecoderMetrics(
+            outputsReleasedToSurface = 1,
+            droppedFrames = 4,
+            queueDepth = 2,
+            lastReleasedFrameId = 0x1234u,
+            lastDecodeDurationMicros = 3_250u,
         )
         eventually {
             harness.session.metrics.value.outputsReleasedToSurface == 1L &&
-                harness.session.metrics.value.droppedVideoFrames == 1L
+                harness.session.metrics.value.droppedVideoFrames == 4L
         }
 
         assertTrue(harness.session.sendTelemetryNow())
         val telemetry = harness.transport.nextSent().decodePayload() as TelemetryPayload
         assertEquals(0x1234uL, telemetry.frameId)
-        assertEquals(1u, telemetry.droppedFrames)
+        assertEquals(4u, telemetry.droppedFrames)
         assertEquals(2, telemetry.queueDepth)
+        assertEquals(3_250u, telemetry.timings.decodeMicros)
+        assertEquals(0u, telemetry.timings.presentationMicros)
+    }
+
+    @Test
+    fun rebuiltSurfaceNeedsANewerCorrelatedOutputBeforeDisplayingAgain() = runTest {
+        val harness = Harness(backgroundScope)
+        harness.connectAndNegotiate()
+        harness.transport.framesMutable.emit(configFrame())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
+        harness.decoder.mutableMetrics.value = VideoDecoderMetrics(
+            outputsReleasedToSurface = 1,
+            lastReleasedFrameId = 10u,
+            lastDecodeDurationMicros = 2_000u,
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Displaying }
+
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingSurface(displayConfig())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Configured }
+        harness.decoder.mutableState.value = VideoDecoderState.AwaitingKeyframe(displayConfig())
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Connected }
+        harness.decoder.mutableMetrics.value = harness.decoder.mutableMetrics.value.copy(
+            queueDepth = 1,
+        )
+        eventually { harness.session.metrics.value.queueDepth == 1 }
+        assertTrue(harness.session.state.value is AndroidDisplaySessionState.Connected)
+
+        harness.decoder.mutableMetrics.value = VideoDecoderMetrics(
+            outputsReleasedToSurface = 2,
+            lastReleasedFrameId = 11u,
+            lastDecodeDurationMicros = 2_500u,
+        )
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Displaying }
+        assertTrue(harness.session.sendTelemetryNow())
+        val telemetry = harness.transport.nextSent().decodePayload() as TelemetryPayload
+        assertEquals(11uL, telemetry.frameId)
     }
 
     private class Harness(scope: kotlinx.coroutines.CoroutineScope) {
@@ -421,14 +461,14 @@ class AndroidDisplaySessionTest {
 
     private class FakeDecoder : VideoDecoder {
         val mutableState = MutableStateFlow<VideoDecoderState>(VideoDecoderState.Idle)
-        val mutableQueueDepth = MutableStateFlow(0)
+        val mutableMetrics = MutableStateFlow(VideoDecoderMetrics())
         val eventsMutable = MutableSharedFlow<VideoDecoderEvent>(extraBufferCapacity = 16)
         val configurations = mutableListOf<DisplayConfigPayload>()
         val submitted = mutableListOf<LdflFrame>()
         val resetReasons = mutableListOf<String>()
         override val state: StateFlow<VideoDecoderState> = mutableState.asStateFlow()
         override val events: SharedFlow<VideoDecoderEvent> = eventsMutable.asSharedFlow()
-        override val queueDepth: StateFlow<Int> = mutableQueueDepth.asStateFlow()
+        override val metrics: StateFlow<VideoDecoderMetrics> = mutableMetrics.asStateFlow()
 
         override fun setOutputSurface(surface: Surface?) = Unit
 

@@ -10,15 +10,22 @@ device.
 From `apps/android` with JDK 17 and Android SDK Platform 36:
 
 ```powershell
-./gradlew.bat --no-daemon testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
+./gradlew.bat --no-daemon testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease assembleDebugAndroidTest
 ```
 
 Outputs:
 
 - app: `app/build/outputs/apk/debug/app-debug.apk`;
 - instrumentation: `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`;
+- unsigned release: `app/build/outputs/apk/release/app-release-unsigned.apk`;
 - unit report: `app/build/reports/tests/testDebugUnitTest/index.html`;
-- lint report: `app/build/reports/lint-results-debug.html`.
+- lint reports: `app/build/reports/lint-results-debug.html` and
+  `app/build/reports/lint-results-release.html`.
+
+The debug APK is installable for development and is signed with a local/CI
+debug key. The release APK is intentionally unsigned and is not an installable
+or distributable production package until it is externally signed. No release
+keystore or signing secret belongs in this repository.
 
 The app APK can be copied to the device and opened for normal sideloading, or
 installed from Android Studio. `adb install -r` and `adb logcat` are acceptable
@@ -26,11 +33,16 @@ developer installation/diagnostic tools, but ADB is never the LadoFlow product
 transport. For the product-path proof, install first, then disable USB debugging
 and confirm the session still uses Android Open Accessory.
 
-The non-hardware instrumentation skeleton can be run with:
+The Android-runtime instrumentation suite can be run with:
 
 ```powershell
 ./gradlew.bat --no-daemon connectedDebugAndroidTest
 ```
+
+It includes a real MediaCodec/Surface decode and Surface-replacement recovery
+test using a synthetic 64x64 H.264 Main fixture. An emulator pass proves only
+that runtime path on that emulator; it does not prove a hardware decoder,
+physical panel presentation, USB transport, or sustained physical-device use.
 
 ## Required host baseline
 
@@ -76,8 +88,10 @@ or below 64 KiB.
    header `sequence`. Compare Android Telemetry `frame_id` with the latest Host
    frame ID actually released by MediaCodec to Surface. Compare `dropped_frames`
    with the Android session counter and `queue_depth` with the pre-Surface plus
-   MediaCodec queues. Do not infer Presented from send count or claim physical
-   panel presentation from a Surface release alone.
+   full decoder in-flight count. Verify `Telemetry.timings.decode` against the
+   input-queue-to-output-callback measurement and expect `presentation` to stay
+   zero until physical scan-out instrumentation exists. Do not infer Presented
+   from send count or claim physical panel presentation from a Surface release.
 9. Exercise touch begin/move/end/cancel, mouse move/buttons/wheel, physical
    keyboard down/up with modifiers, focus loss, rotation/resolution
    reconfiguration, explicit disconnect, cable detach, foreground/background,

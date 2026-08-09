@@ -66,8 +66,12 @@ they add no LDFL field, flag, message, or compatibility rule.
 Telemetry `frame_id` is the Host `VideoFrame.metadata.frame_id` most recently
 released by MediaCodec to the Surface, never a locally guessed ordinal.
 `dropped_frames` is cumulative for the current USB/LDFL session. `queue_depth`
-is the sum of the three-frame pre-Surface buffer and MediaCodec access units
-pending input or waiting for output release.
+is the sum of the three-frame pre-Surface buffer and the decoder's single
+eight-access-unit bound spanning Handler admission, pending input, and codec
+inputs waiting for output release. Decoder batch clears are counted by their
+exact discarded access-unit count, not as one diagnostic event. `decode` timing
+is measured from codec input queueing to output callback; `presentation` stays
+zero because Surface release does not prove panel scan-out.
 
 ## Evidence boundary
 
@@ -77,5 +81,8 @@ priority-before-numbering, negotiated keyboard Input numbering, rejection of
 an input family absent from the Host mask, detach, same-process reconnect with
 fresh `0/1/2` Host numbering, and classified failure paths. MediaCodec
 capability enumeration and actual Surface decode require an Android runtime.
+The instrumentation suite exercises a real MediaCodec with a synthetic H.264
+Main fixture and verifies Surface replacement/keyframe recovery; this remains
+separate from physical-device evidence.
 
 **未实机验证 / Not verified on a physical Android device.**

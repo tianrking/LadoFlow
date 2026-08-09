@@ -27,7 +27,9 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
+            isDebuggable = false
             isMinifyEnabled = false
+            signingConfig = null
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

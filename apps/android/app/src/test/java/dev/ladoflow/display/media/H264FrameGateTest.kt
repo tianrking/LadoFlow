@@ -148,11 +148,59 @@ class H264FrameGateTest {
         assertDropped(gate.offer(frame), DecoderDropReason.TimestampOutOfRange)
     }
 
+    @Test
+    fun timestampDiscontinuityDropsDependentChainUntilKeyframe() {
+        val gate = H264FrameGate()
+        gate.offer(
+            videoFrame(
+                frameId = 80u,
+                bytes = parameterNalUnits + idrNalUnit,
+                flags = FrameFlags.Keyframe,
+                presentationTimestampMicros = 80_000u,
+            ),
+        )
+
+        assertDropped(
+            gate.offer(
+                videoFrame(
+                    frameId = 81u,
+                    bytes = deltaNalUnit,
+                    flags = FrameFlags.None,
+                    presentationTimestampMicros = 79_000u,
+                ),
+            ),
+            DecoderDropReason.TimestampDiscontinuity,
+        )
+        assertDropped(
+            gate.offer(
+                videoFrame(
+                    frameId = 82u,
+                    bytes = deltaNalUnit,
+                    flags = FrameFlags.None,
+                    presentationTimestampMicros = 81_000u,
+                ),
+            ),
+            DecoderDropReason.AwaitingKeyframe,
+        )
+        val recovered = gate.offer(
+            videoFrame(
+                frameId = 83u,
+                bytes = parameterNalUnits + idrNalUnit,
+                flags = FrameFlags.Keyframe,
+                presentationTimestampMicros = 82_000u,
+            ),
+        ) as H264GateDecision.Ready
+
+        assertTrue(recovered.requiresCodecRestart)
+        assertEquals(83uL, recovered.input.frameId)
+    }
+
     private fun videoFrame(
         frameId: ULong,
         bytes: ByteArray,
         flags: FrameFlags,
         sequence: ULong = frameId,
+        presentationTimestampMicros: ULong = frameId * 10u + 5u,
     ): LdflFrame = LdflFrame.fromPayload(
         flags = flags,
         sequence = sequence,
@@ -160,7 +208,7 @@ class H264FrameGateTest {
             metadata = VideoFrameMetadata(
                 frameId = frameId,
                 captureTimestampMicros = frameId * 10u,
-                presentationTimestampMicros = frameId * 10u + 5u,
+                presentationTimestampMicros = presentationTimestampMicros,
                 durationMicros = 16_667u,
             ),
             accessUnit = bytes,

@@ -9,6 +9,7 @@ import dev.ladoflow.display.input.RemoteViewport
 import dev.ladoflow.display.media.DecoderSurfaceController
 import dev.ladoflow.display.media.VideoDecoder
 import dev.ladoflow.display.media.VideoDecoderEvent
+import dev.ladoflow.display.media.VideoDecoderMetrics
 import dev.ladoflow.display.media.VideoDecoderState
 import dev.ladoflow.display.protocol.CapabilitiesPayload
 import dev.ladoflow.display.protocol.CodecCapabilities
@@ -108,6 +109,7 @@ data class AndroidDisplaySessionMetrics(
     val droppedVideoFrames: Long = 0,
     val droppedInputEvents: Long = 0,
     val queueDepth: Int = 0,
+    val latestDecodeDurationMicros: UInt? = null,
 )
 
 /** Owns LDFL v1 negotiation and composes transport, decoder, Surface, and reverse input. */
@@ -143,6 +145,8 @@ class AndroidDisplaySession(
     private var surfaceReady = false
     private var awaitingSurfaceKeyframe = true
     private val pendingSurfaceFrames = java.util.ArrayDeque<LdflFrame>(3)
+    private var localDroppedVideoFrames = 0L
+    private var surfaceOutputBaseline = 0L
     private var lastReleasedFrameId = 0uL
     private var pingToken = 0uL
     private var inboundSequences = MonotonicSequenceValidator()
@@ -158,7 +162,7 @@ class AndroidDisplaySession(
         scope.launch { transport.frames.collect(::handleInboundFrame) }
         scope.launch { decoder.events.collect(::handleDecoderEvent) }
         scope.launch { decoder.state.collect(::handleDecoderState) }
-        scope.launch { decoder.queueDepth.collect { updateQueueDepthMetric() } }
+        scope.launch { decoder.metrics.collect(::handleDecoderMetrics) }
         if (periodicReportsEnabled) {
             scope.launch { telemetryLoop() }
             scope.launch { pingLoop() }
@@ -440,6 +444,7 @@ class AndroidDisplaySession(
 
         activeConfiguration = configuration
         surfaceReady = false
+        surfaceOutputBaseline = decoder.metrics.value.outputsReleasedToSurface
         awaitingSurfaceKeyframe = true
         pendingSurfaceFrames.clear()
         inputController.updateViewport(
@@ -499,9 +504,7 @@ class AndroidDisplaySession(
         if (!surfaceReady) {
             enqueueUntilSurfaceReady(frame)
         } else if (!decoder.submit(frame)) {
-            mutableMetrics.value = mutableMetrics.value.copy(
-                droppedVideoFrames = mutableMetrics.value.droppedVideoFrames + 1,
-            )
+            recordDroppedVideo()
         }
     }
 
@@ -547,32 +550,10 @@ class AndroidDisplaySession(
 
     private fun handleDecoderEvent(event: VideoDecoderEvent) {
         when (event) {
-            is VideoDecoderEvent.FrameDropped -> mutableMetrics.value = mutableMetrics.value.copy(
-                droppedVideoFrames = mutableMetrics.value.droppedVideoFrames + 1,
-            )
-
-            is VideoDecoderEvent.OutputReleasedToSurface -> if (surfaceReady) {
-                mutableMetrics.value = mutableMetrics.value.copy(
-                    outputsReleasedToSurface = mutableMetrics.value.outputsReleasedToSurface + 1,
-                )
-                lastReleasedFrameId = event.frameId ?: lastReleasedFrameId
-                val configuration = activeConfiguration
-                val hello = remoteHello
-                if (configuration != null && hello != null) {
-                    mutableState.value = AndroidDisplaySessionState.Displaying(
-                        hello.implementationName,
-                        configuration,
-                    )
-                }
-            }
-
-            is VideoDecoderEvent.Failure -> {
-                surfaceReady = false
-                mutableState.value = AndroidDisplaySessionState.Recovering(
-                    attempt = 1,
-                    reason = event.message,
-                )
-            }
+            is VideoDecoderEvent.FrameDropped,
+            is VideoDecoderEvent.OutputReleasedToSurface,
+            is VideoDecoderEvent.Failure,
+            -> Unit
 
             VideoDecoderEvent.EndOfStream -> {
                 activeConfiguration = null
@@ -585,6 +566,32 @@ class AndroidDisplaySession(
             is VideoDecoderEvent.OutputFormatChanged,
             is VideoDecoderEvent.Warning,
             -> Unit
+        }
+    }
+
+    private fun handleDecoderMetrics(decoderMetrics: VideoDecoderMetrics) {
+        val configuration = activeConfiguration ?: return
+        val hello = remoteHello ?: return
+        val correlatedFrameId = decoderMetrics.lastReleasedFrameId
+        if (correlatedFrameId != null) lastReleasedFrameId = correlatedFrameId
+        mutableMetrics.value = mutableMetrics.value.copy(
+            outputsReleasedToSurface = decoderMetrics.outputsReleasedToSurface,
+            droppedVideoFrames = localDroppedVideoFrames.saturatingAdd(
+                decoderMetrics.droppedFrames,
+            ),
+            queueDepth = (pendingSurfaceFrames.size + decoderMetrics.queueDepth)
+                .coerceAtMost(MAX_TELEMETRY_QUEUE_DEPTH),
+            latestDecodeDurationMicros = decoderMetrics.lastDecodeDurationMicros,
+        )
+        if (
+            surfaceReady &&
+            correlatedFrameId != null &&
+            decoderMetrics.outputsReleasedToSurface > surfaceOutputBaseline
+        ) {
+            mutableState.value = AndroidDisplaySessionState.Displaying(
+                hello.implementationName,
+                configuration,
+            )
         }
     }
 
@@ -605,8 +612,18 @@ class AndroidDisplaySession(
                 drainPendingSurfaceFrames()
             }
 
+            is VideoDecoderState.Recovering -> {
+                surfaceReady = true
+                mutableState.value = AndroidDisplaySessionState.Recovering(
+                    attempt = decoderState.attempt,
+                    reason = decoderState.reason,
+                )
+                drainPendingSurfaceFrames()
+            }
+
             is VideoDecoderState.AwaitingSurface -> {
                 surfaceReady = false
+                surfaceOutputBaseline = decoder.metrics.value.outputsReleasedToSurface
                 mutableState.value = AndroidDisplaySessionState.Configured(
                     hello.implementationName,
                     configuration,
@@ -615,7 +632,17 @@ class AndroidDisplaySession(
 
             is VideoDecoderState.Failed -> {
                 surfaceReady = false
-                mutableState.value = AndroidDisplaySessionState.Recovering(1, decoderState.message)
+                surfaceOutputBaseline = decoder.metrics.value.outputsReleasedToSurface
+                mutableState.value = if (decoderState.recoverableOnKeyframe) {
+                    AndroidDisplaySessionState.Recovering(1, decoderState.message)
+                } else {
+                    failed = true
+                    AndroidDisplaySessionState.Failed(
+                        reason = decoderState.message,
+                        retryable = true,
+                        kind = DisplaySessionFailureKind.Decoder,
+                    )
+                }
             }
 
             VideoDecoderState.Closed -> {
@@ -638,10 +665,7 @@ class AndroidDisplaySession(
         val keyframe = frame.flags.contains(dev.ladoflow.display.protocol.FrameFlags.Keyframe)
         when {
             keyframe -> {
-                mutableMetrics.value = mutableMetrics.value.copy(
-                    droppedVideoFrames = mutableMetrics.value.droppedVideoFrames +
-                        pendingSurfaceFrames.size,
-                )
+                recordDroppedVideo(pendingSurfaceFrames.size.toLong())
                 pendingSurfaceFrames.clear()
                 pendingSurfaceFrames.addLast(frame)
                 awaitingSurfaceKeyframe = false
@@ -650,10 +674,7 @@ class AndroidDisplaySession(
 
             awaitingSurfaceKeyframe -> recordDroppedVideo()
             pendingSurfaceFrames.size >= 3 -> {
-                mutableMetrics.value = mutableMetrics.value.copy(
-                    droppedVideoFrames = mutableMetrics.value.droppedVideoFrames +
-                        pendingSurfaceFrames.size + 1,
-                )
+                recordDroppedVideo(pendingSurfaceFrames.size.toLong() + 1L)
                 pendingSurfaceFrames.clear()
                 awaitingSurfaceKeyframe = true
                 updateQueueDepthMetric()
@@ -728,6 +749,8 @@ class AndroidDisplaySession(
         awaitingSurfaceKeyframe = true
         pendingSurfaceFrames.clear()
         inboundSequences = MonotonicSequenceValidator()
+        localDroppedVideoFrames = 0L
+        surfaceOutputBaseline = decoder.metrics.value.outputsReleasedToSurface
         mutableMetrics.value = AndroidDisplaySessionMetrics()
         lastReleasedFrameId = 0uL
         pingToken = 0uL
@@ -735,6 +758,7 @@ class AndroidDisplaySession(
         if (mutableState.value is AndroidDisplaySessionState.Configured ||
             mutableState.value is AndroidDisplaySessionState.Connected ||
             mutableState.value is AndroidDisplaySessionState.Displaying ||
+            mutableState.value is AndroidDisplaySessionState.Recovering ||
             mutableState.value is AndroidDisplaySessionState.Ready
         ) {
             decoder.reset(reason)
@@ -747,14 +771,18 @@ class AndroidDisplaySession(
         )
     }
 
-    private fun recordDroppedVideo() {
+    private fun recordDroppedVideo(count: Long = 1L) {
+        if (count <= 0L) return
+        localDroppedVideoFrames = localDroppedVideoFrames.saturatingAdd(count)
         mutableMetrics.value = mutableMetrics.value.copy(
-            droppedVideoFrames = mutableMetrics.value.droppedVideoFrames + 1,
+            droppedVideoFrames = localDroppedVideoFrames.saturatingAdd(
+                decoder.metrics.value.droppedFrames,
+            ),
         )
     }
 
     private fun updateQueueDepthMetric() {
-        val depth = (pendingSurfaceFrames.size + decoder.queueDepth.value)
+        val depth = (pendingSurfaceFrames.size + decoder.metrics.value.queueDepth)
             .coerceAtMost(MAX_TELEMETRY_QUEUE_DEPTH)
         if (mutableMetrics.value.queueDepth != depth) {
             mutableMetrics.value = mutableMetrics.value.copy(queueDepth = depth)
@@ -772,14 +800,20 @@ class AndroidDisplaySession(
         if (!negotiated || failed || activeConfiguration == null) return false
         val snapshot = mutableMetrics.value
         val currentOutbound = outbound ?: return false
-        val queueDepth = (pendingSurfaceFrames.size + decoder.queueDepth.value)
+        val queueDepth = (pendingSurfaceFrames.size + decoder.metrics.value.queueDepth)
             .coerceAtMost(MAX_TELEMETRY_QUEUE_DEPTH)
         if (snapshot.queueDepth != queueDepth) updateQueueDepthMetric()
         currentOutbound.sendControl(
             TelemetryPayload(
                 sampleTimestampMicros = monotonicMicros(),
                 frameId = lastReleasedFrameId,
-                timings = StageTimings(0u, 0u, 0u, 0u, 0u),
+                timings = StageTimings(
+                    captureMicros = 0u,
+                    encodeMicros = 0u,
+                    transportMicros = 0u,
+                    decodeMicros = snapshot.latestDecodeDurationMicros ?: 0u,
+                    presentationMicros = 0u,
+                ),
                 queueDepth = queueDepth,
                 lossPartsPerMillion = 0u,
                 droppedFrames = snapshot.droppedVideoFrames
@@ -825,3 +859,6 @@ private fun secureNonce(): ByteArray = ByteArray(16).also(SecureRandom()::nextBy
 
 private fun elapsedRealtimeMicros(): ULong =
     SystemClock.elapsedRealtimeNanos().toULong() / 1_000uL
+
+private fun Long.saturatingAdd(value: Long): Long =
+    if (value > Long.MAX_VALUE - this) Long.MAX_VALUE else this + value

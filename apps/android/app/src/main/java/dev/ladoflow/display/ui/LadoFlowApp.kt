@@ -193,6 +193,7 @@ private fun AndroidDisplaySessionMetrics.toUiMetrics(): StreamMetrics = StreamMe
     releasedToSurfaceFrames = outputsReleasedToSurface,
     droppedFrames = droppedVideoFrames,
     queueDepth = queueDepth,
+    decodeLatencyMillis = latestDecodeDurationMicros?.toDouble()?.div(1_000.0),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)

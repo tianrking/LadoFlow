@@ -42,8 +42,30 @@ jobs:
           ./gradlew --no-daemon
           testDebugUnitTest
           lintDebug
+          lintRelease
           assembleDebug
+          assembleRelease
           assembleDebugAndroidTest
+
+      - name: Verify unsigned release reproducibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -f "$release_apk"
+          first_sha="$(sha256sum "$release_apk" | cut -d ' ' -f 1)"
+          ./gradlew --no-daemon assembleRelease --rerun-tasks
+          second_sha="$(sha256sum "$release_apk" | cut -d ' ' -f 1)"
+          if [[ "$first_sha" != "$second_sha" ]]; then
+            echo "Release APK is not reproducible: $first_sha != $second_sha" >&2
+            exit 1
+          fi
+          if "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$release_apk"; then
+            echo "Release APK must remain unsigned in CI" >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "$second_sha" "$(basename "$release_apk")" \
+            > app/build/outputs/apk/release/SHA256SUMS
 
       - name: Upload Android APKs and reports
         if: always()
@@ -56,6 +78,16 @@ jobs:
             apps/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             apps/android/app/build/reports/lint-results-debug.*
             apps/android/app/build/reports/tests/testDebugUnitTest/**
+
+      - name: Upload unsigned Android release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-display-release-unsigned
+          if-no-files-found: error
+          path: |
+            apps/android/app/build/outputs/apk/release/app-release-unsigned.apk
+            apps/android/app/build/outputs/apk/release/SHA256SUMS
+            apps/android/app/build/reports/lint-results-release.*
 
   shared-rust:
     name: Shared Rust foundation

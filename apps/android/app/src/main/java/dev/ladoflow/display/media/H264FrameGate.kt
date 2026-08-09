@@ -13,9 +13,14 @@ enum class DecoderDropReason {
     MissingParameterSets,
     ParameterSetsOnly,
     TimestampOutOfRange,
+    TimestampDiscontinuity,
     QueueOverflow,
     NoConfiguration,
     NoSurface,
+    SurfaceInvalidated,
+    ConfigurationChanged,
+    KeyframeRecovery,
+    OutputCorrelationLost,
     CodecFailure,
 }
 
@@ -53,9 +58,11 @@ class H264FrameGate {
     private var sequenceParameterSet: ByteArray? = null
     private var pictureParameterSet: ByteArray? = null
     private var awaitingKeyframe = true
+    private var lastPresentationTimestampMicros: Long? = null
 
     fun reset(clearParameterSets: Boolean = true) {
         awaitingKeyframe = true
+        lastPresentationTimestampMicros = null
         if (clearParameterSets) {
             sequenceParameterSet = null
             pictureParameterSet = null
@@ -64,6 +71,7 @@ class H264FrameGate {
 
     fun awaitNextKeyframe() {
         awaitingKeyframe = true
+        lastPresentationTimestampMicros = null
     }
 
     fun offer(frame: LdflFrame): H264GateDecision {
@@ -147,12 +155,29 @@ class H264FrameGate {
             )
         }
 
+        val signedPresentationTimestamp = presentationTimestamp.toLong()
+        val timestampDiscontinuity = lastPresentationTimestampMicros?.let { previous ->
+            signedPresentationTimestamp <= previous
+        } == true
+        if (timestampDiscontinuity) {
+            awaitingKeyframe = true
+            if (!isKeyframe) {
+                lastPresentationTimestampMicros = null
+                return H264GateDecision.Dropped(
+                    frameId = payload.metadata.frameId,
+                    reason = DecoderDropReason.TimestampDiscontinuity,
+                    detail = "H.264 presentation timestamp did not increase; waiting for KEYFRAME",
+                )
+            }
+        }
+
         val wasAwaitingKeyframe = awaitingKeyframe
         awaitingKeyframe = false
+        lastPresentationTimestampMicros = signedPresentationTimestamp
         return H264GateDecision.Ready(
             input = H264DecoderInput(
                 frameId = payload.metadata.frameId,
-                presentationTimestampMicros = presentationTimestamp.toLong(),
+                presentationTimestampMicros = signedPresentationTimestamp,
                 durationMicros = payload.metadata.durationMicros,
                 accessUnit = payload.accessUnit.copyOf(),
                 isKeyframe = isKeyframe,
