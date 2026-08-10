@@ -1,0 +1,165 @@
+# Android physical-device validation
+
+This is the evidence checklist for the first Android display milestone. A green
+build, emulator test, or successful APK installation is not evidence that AOA,
+MediaCodec, touch return, or sustained display output works on a physical
+device.
+
+## Artifacts
+
+From `apps/android` with JDK 17 and Android SDK Platform 36:
+
+```powershell
+./gradlew.bat --no-daemon testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease assembleDebugAndroidTest
+```
+
+Outputs:
+
+- app: `app/build/outputs/apk/debug/app-debug.apk`;
+- instrumentation: `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`;
+- unsigned release: `app/build/outputs/apk/release/app-release-unsigned.apk`;
+- unit report: `app/build/reports/tests/testDebugUnitTest/index.html`;
+- lint reports: `app/build/reports/lint-results-debug.html` and
+  `app/build/reports/lint-results-release.html`.
+
+The debug APK is installable for development and is signed with a local/CI
+debug key. The release APK is intentionally unsigned and is not an installable
+or distributable production package until it is externally signed. No release
+keystore or signing secret belongs in this repository.
+
+The app APK can be copied to the device and opened for normal sideloading, or
+installed from Android Studio. `adb install -r` and `adb logcat` are acceptable
+developer installation/diagnostic tools, but ADB is never the LadoFlow product
+transport. For the product-path proof, install first, then disable USB debugging
+and confirm the session still uses Android Open Accessory.
+
+The Android-runtime instrumentation suite can be run with:
+
+```powershell
+./gradlew.bat --no-daemon connectedDebugAndroidTest
+```
+
+It includes a real MediaCodec/Surface decode and Surface-replacement recovery
+test using a synthetic 64x64 H.264 Main fixture. An emulator pass proves only
+that runtime path on that emulator; it does not prove a hardware decoder,
+physical panel presentation, USB transport, or sustained physical-device use.
+
+## Required host baseline
+
+Use a PC build at or after `6fbfddf` (`Stream Windows capture through GPU
+H264`). This supersedes the earlier synthetic test-pattern baseline: the Host
+now runs cancellable Windows.Graphics.Capture, converts BGRA to NV12 with the
+VideoProcessor on the same D3D11 device without CPU readback, encodes
+low-latency H.264 Main with B-frames disabled, and sends each access unit as an
+LDFL VideoFrame. Record the exact Host SHA; do not rely on a branch name alone.
+
+No protocol field was added for this capture path. The current Host sets every
+`VideoFrame.metadata.frame_id` to that frame's global LDFL header `sequence`.
+
+For the USB-tether fallback, use a Windows Host build at or after `db3685a`,
+which includes automatic USB-tether gateway discovery and the fixed LDFP
+pairing contract. Record the exact newer Host SHA when the physical run uses a
+later commit.
+
+The host must enter AOA with manufacturer `LadoFlow`, model `LadoFlow Host`, and
+then carry raw LDFL v1 bytes with no USB-private header. Host writes remain at
+or below 64 KiB.
+
+## Functional run
+
+1. Record Android manufacturer/model, Android build, API level, reported display
+   modes, selected MediaCodec name, cable/adapter, PC OS/build, GPU, and Host SHA.
+2. Start LadoFlow Android with USB debugging disabled. Connect a data-capable
+   cable and start the PC host.
+3. Confirm Android shows the system accessory permission dialog. Exercise both
+   denial/retry and approval once.
+4. Confirm the UI explicitly shows `Waiting for authorization`, `Connected`,
+   `Reconnecting`, `Protocol error`, and `Device disconnected` for those real
+   states. `Displaying` may appear only after the first MediaCodec output is
+   released to Surface.
+5. Confirm Host sequence `0/1/2` negotiates H.264 Main within the Android
+   advertised size/rate/bitrate. The app must fail closed on a deliberately
+   duplicated sequence and on VideoFrame before DisplayConfig.
+6. Display live Windows capture at every resolution the Android capability
+   permits. Do not force the PC encoder's full
+   1280x800/1920x1080/2560x1440/2732x2048 matrix above the device's advertised
+   maximum.
+7. Verify SPS/PPS plus the LDFL `KEYFRAME` starts decode and P-frame access-unit
+   boundaries are retained. Recreate the Activity, rotate portrait/landscape,
+   and change the available window size while streaming. Confirm a stale old
+   Surface destruction cannot clear the new Surface and each real Surface
+   replacement waits for a fresh keyframe.
+8. Confirm each Host `VideoFrame.metadata.frame_id` equals its global LDFL
+   header `sequence`. Compare Android Telemetry `frame_id` with the latest Host
+   frame ID actually released by MediaCodec to Surface. Compare `dropped_frames`
+   with the Android session counter and `queue_depth` with the pre-Surface plus
+   full decoder in-flight count. Verify `Telemetry.timings.decode` against the
+   input-queue-to-output-callback measurement and expect `presentation` to stay
+   zero until physical scan-out instrumentation exists. Do not infer Presented
+   from send count or claim physical panel presentation from a Surface release.
+9. Exercise touch begin/move/end/cancel, mouse move/buttons/wheel, physical
+   keyboard down/up with modifiers, focus loss, rotation/resolution
+   reconfiguration, explicit disconnect, cable detach, foreground/background,
+   and reconnect. After both transient I/O recovery and detach/reattach in the
+   same Android process, confirm a fresh Host `Hello/0`, `Capabilities/1`, and
+   `DisplayConfig/2` is accepted. Confirm the Host advertises each input family
+   before Android sends it and releases tracked input state after focus loss or
+   disconnect.
+10. Run at least 30 minutes at the negotiated 60 Hz or downgraded 30 Hz. Record
+    frame count, drops, maximum queue depth, decoder failures, reconnects,
+    thermal state, and any visible corruption or latency observation.
+
+## USB tethering fallback run
+
+Run this separately from AOA so the evidence identifies which transport was
+actually exercised:
+
+1. With USB debugging disabled, connect the data cable and enable Android's
+   system **USB tethering** toggle. Keep LadoFlow in the foreground.
+2. Select **Use USB tethering fallback** and create a code. Record only that a
+   code appeared and its format; never capture the live token in logs or this
+   evidence document.
+3. Confirm Android listens on the shown private/link-local USB interface address
+   and TCP `49231`, not wildcard, Wi-Fi, cellular, Ethernet, or VPN. Record the
+   OEM kernel interface name separately.
+4. Pair from a Host build implementing the exact four-record contract in
+   `docs/usb-tether.md`. Confirm HostHello/DisplayHello/HostFinished/
+   DisplayFinished complete, the code immediately disappears, and the next
+   byte on the same socket is raw LDFL with no transport header.
+5. Confirm Host `Hello/0`, `Capabilities/1`, and `DisplayConfig/2` start a fresh
+   generation and reach the same decoder/Surface checks as AOA.
+6. Test expiry after two minutes, closure after three bad handshakes, foreground
+   stop/background invalidation, a second-host rejection, a silent socket read
+   during pairing, more than 15 seconds of valid post-Pair/pre-Start idle,
+   explicit-close cancellation, disconnect, and a new in-process code/session.
+7. Repeat the display, telemetry, reverse-input, Surface recreation, and
+   30-minute sustained checks above. Treat pairing as authentication only; do
+   not report the LDFL TCP stream as encrypted or as LAN mode.
+
+## Evidence record
+
+| Field | Result |
+| --- | --- |
+| Date/time and operator | |
+| Android device / build / API | |
+| Display modes | |
+| MediaCodec name / acceleration evidence | |
+| Host OS / GPU / exact SHA | |
+| Cable / adapter | |
+| Negotiated width × height @ refresh / bitrate | |
+| Duration | |
+| Host frames / Android Surface releases | |
+| Dropped frames / max queue depth | |
+| Permission, detach, in-process reconnect result | |
+| Transport exercised / tether interface and endpoint | |
+| Tether expiry / three failures / second host / background stop | |
+| Activity rebuild / Surface generation / resize result | |
+| Touch / mouse / rotation result | |
+| Logs, video, screenshots, trace paths | |
+| Verdict and remaining failures | |
+
+## Current evidence boundary
+
+No row above has been completed with a physical Android device in this branch.
+
+**未实机验证 / Not verified on a physical Android device.**

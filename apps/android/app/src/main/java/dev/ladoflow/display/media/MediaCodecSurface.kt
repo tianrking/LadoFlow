@@ -1,0 +1,102 @@
+package dev.ladoflow.display.media
+
+import android.content.Context
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
+import dev.ladoflow.display.input.AndroidInputController
+
+/** Compose-owned SurfaceView that forwards Surface lifecycle and input events. */
+@Composable
+fun MediaCodecSurface(
+    surfaceController: DecoderSurfaceController,
+    modifier: Modifier = Modifier,
+    inputController: AndroidInputController? = null,
+) {
+    val callback = remember(surfaceController) { DecoderSurfaceCallback(surfaceController) }
+
+    AndroidView(
+        factory = { context ->
+            DecoderSurfaceView(context).also { surfaceView ->
+                surfaceView.holder.addCallback(callback)
+                surfaceView.installInputController(inputController)
+            }
+        },
+        update = { surfaceView -> surfaceView.installInputController(inputController) },
+        modifier = modifier,
+    )
+
+    DisposableEffect(surfaceController, callback) {
+        onDispose { callback.release() }
+    }
+}
+
+internal class DecoderSurfaceCallback(
+    private val surfaceController: DecoderSurfaceController,
+) : SurfaceHolder.Callback {
+    private var lease: DecoderSurfaceLease? = null
+
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        release()
+        lease = surfaceController.attach(holder.surface)
+    }
+
+    override fun surfaceChanged(
+        holder: SurfaceHolder,
+        format: Int,
+        width: Int,
+        height: Int,
+    ) {
+        lease?.let { surfaceController.resize(it, width, height) }
+    }
+
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        release()
+    }
+
+    fun release() {
+        lease?.let(surfaceController::detach)
+        lease = null
+    }
+}
+
+internal fun DecoderSurfaceView.installInputController(controller: AndroidInputController?) {
+    isFocusable = controller != null
+    isFocusableInTouchMode = controller != null
+    setOnTouchListener(
+        controller?.let { input ->
+            { view, event ->
+                if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) view.requestFocus()
+                val handled = input.onTouchEvent(view.width, view.height, event)
+                if (handled && event.actionMasked == android.view.MotionEvent.ACTION_UP) {
+                    view.performClick()
+                }
+                handled
+            }
+        },
+    )
+    setOnGenericMotionListener(
+        controller?.let { input ->
+            { view, event -> input.onGenericMotionEvent(view.width, view.height, event) }
+        },
+    )
+    setOnKeyListener(
+        controller?.let { input ->
+            { _, _, event -> input.onKeyEvent(event) }
+        },
+    )
+    onFocusChangeListener = controller?.let { input ->
+        android.view.View.OnFocusChangeListener { _, focused -> input.onFocusChanged(focused) }
+    }
+}
+
+internal class DecoderSurfaceView(context: Context) : SurfaceView(context) {
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+}
