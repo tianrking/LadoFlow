@@ -48,18 +48,18 @@ path; it is not automatically a release claim.
 
 ## M4 — Android display and USB
 
-- [ ] Native Kotlin receiver shell
+- [x] Native Kotlin/Compose receiver shell with state-driven display, settings, and diagnostics UI
 - [x] Shared AOA 1/2 negotiation contract and Windows explicit mode-switch/endpoint-claim probe
 - [x] Cancellable Windows bulk worker with bounded queues, 64 KiB transfer chunks, and LDFL stream decoding
 - [x] Desktop runtime USB control exchange with Hello, Capabilities, DisplayConfig, Ping/Pong, and failure diagnostics
 - [x] Real selected-display capture and hardware H.264 runtime composition with the USB worker
 - [ ] Physical Windows-to-Android USB interoperability without ADB
-- [ ] H.264 hardware decoder and renderer
-- [ ] Touch and pointer return path
+- [x] Capability-gated H.264 Main MediaCodec/Surface decoder and renderer boundary
+- [x] Capability-gated touch, pointer, wheel, and physical-keyboard return path
 - [x] Host-side bounded/cancellable USB disconnect recovery with fresh protocol negotiation
 - [x] Shared bounded TCP LDFL worker for an already authenticated connected socket
 - [x] Windows USB-tether route discovery/UI with bounded USB device-tree evidence
-- [ ] Android listener and mutually authenticated pairing preface
+- [x] Foreground-only Android USB-tether listener and mutually authenticated pairing preface
 - [ ] Physical detach/reconnect endurance and cancellation test
 - [ ] macOS and Windows USB interoperability test
 

@@ -31,13 +31,13 @@ La experiencia final deberá ser sencilla: instalar el host, abrir LadoFlow en l
 | --- | --- | --- |
 | Protocolo compartido | Mensajes M1 y encuadre acotado implementados | Mensajes versionados de control, vídeo, entrada y telemetría |
 | Runtime compartido | Negociación, sesiones, reconexión, telemetría, ritmo y loopback implementados | Runtime común para hosts y pantallas |
-| Host de escritorio | Aplicación Tauri 2 con loopback y diagnósticos ejecutable | Una interfaz con servicios nativos por plataforma |
+| Host de escritorio | Host Tauri 2 con diagnósticos, bandeja, instancia única, loopback y adaptadores nativos por destino | Una interfaz con servicios nativos por plataforma |
 | Host macOS | Permisos/pantallas, prueba IOSurface real con ScreenCaptureKit y paquete local implementados | Flujo continuo con VideoToolbox, pantalla virtual nativa y aplicación notarizada |
 | Host Windows | Captura, H.264 por GPU y entrada verificados; controlador IddCx, servicio LocalSystem y cliente IPC acotado compilados y validados | Instalación confiable, selección automática, recuperación en sistema limpio y firma de producción |
 | Host Linux | Solo arquitectura | Integración compatible con Wayland, X11 y DRM |
-| Pantalla Android | Solo arquitectura | Receptor Kotlin nativo con decodificación por hardware |
+| Pantalla Android | Receptor Kotlin/Compose con LDFL v1, AOA, USB tether autenticado, MediaCodec, recuperación, telemetría y retorno táctil/ratón/teclado; pasan JVM y emulador Android 14, pero falta la prueba física por cable | Versión firmada y validada en teléfonos y tabletas compatibles |
 | Pantalla iOS/iPadOS | Solo arquitectura | Receptor Swift nativo con decodificación por hardware |
-| Transporte USB | AOA, transporte dúplex acotado, H.264 real y entrada implementados; falta la prueba física completa con Android | Enlace directo, autenticado y reconectable |
+| Transporte USB | AOA directo y alternativa USB tether implementados en Windows y Android con I/O acotada, autenticación mutua, LDFL ordenado, H.264, entrada y recuperación; falta la prueba física completa | Enlace directo, autenticado y reconectable |
 | Wi-Fi/LAN | Planificado | Conexión local mediante emparejamiento explícito |
 
 La [hoja de ruta](./docs/roadmap.md) es la referencia para el avance verificable.
@@ -57,6 +57,31 @@ El símbolo muestra dos pantallas contiguas unidas por un recorrido continuo. La
 - Cada afirmación de latencia deberá estar respaldada por mediciones reproducibles.
 
 Consulta la [arquitectura](./docs/architecture.md), el [protocolo](./docs/protocol.md) y la [guía de marca](./docs/brand.md).
+
+## Descargar solo una plataforma
+
+El monorepo mantiene protocolo, Desktop y Android en una versión compatible,
+pero un checkout disperso permite obtener únicamente los archivos necesarios.
+
+Solo Android:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/tianrking/LadoFlow.git
+cd LadoFlow
+git sparse-checkout set apps/android docs
+```
+
+Desktop y componentes nativos de Windows:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/tianrking/LadoFlow.git
+cd LadoFlow
+git sparse-checkout set apps/desktop crates platform/windows docs
+```
+
+`git sparse-checkout disable` restaura el árbol completo. Los usuarios finales
+deberán descargar paquetes firmados desde GitHub Releases, no clonar el código.
+Consulta la [guía completa](./docs/source-checkout.md).
 
 ## Ejecutar la base de escritorio actual
 

@@ -6,6 +6,32 @@ LadoFlow turns a mobile device into an extended desktop display. A host must cre
 
 The architecture is split so platform restrictions do not leak into the wire protocol.
 
+## Monorepo and implementation boundaries
+
+One Git repository does not mean one universal binary or one language. The
+repository records one interoperable product version while each deliverable
+uses the native boundary appropriate to its platform:
+
+```text
+LadoFlow/
+├─ crates/                         shared Rust protocol and host policies
+├─ apps/desktop/                   Tauri UI plus Rust desktop composition
+│  └─ src-tauri/src/platform/     Windows, macOS, and Linux target adapters
+├─ apps/android/                   native Kotlin/Compose display endpoint
+└─ platform/windows/idd/           native Windows driver, service, and setup tools
+```
+
+The desktop packages compile the shared Rust crates and select an OS adapter at
+build time; Windows, macOS, and Linux therefore produce different packages from
+one desktop source tree. Android does not embed the Rust desktop runtime. It
+implements the documented LDFL wire contract independently in Kotlin and uses
+golden vectors plus cross-role tests to keep every byte compatible. A future
+iOS/iPadOS application follows the same model with Swift and Apple-native media
+APIs unless a small, justified Rust FFI boundary proves useful.
+
+See [Getting the source](./source-checkout.md) for full and platform-only sparse
+checkout commands.
+
 ```mermaid
 flowchart TB
     subgraph Host["Host computer"]
@@ -192,6 +218,15 @@ Support will be backend-specific. Wayland compositors, X11, and DRM virtual outp
 ### Android
 
 Use Kotlin, MediaCodec, Surface/SurfaceTexture rendering, and Android USB APIs. The release path must not require developer mode or ADB.
+
+The current Android endpoint is native Kotlin/Compose. It has an independent,
+bounded LDFL v1 codec; Android Open Accessory and foreground-only authenticated
+USB-tether transports; a MediaCodec H.264 Main Surface decoder with keyframe,
+queue, discontinuity, and Surface-lifecycle gates; telemetry; and negotiated
+pointer, touch, wheel, and physical-keyboard return. JVM and Android 14 emulator
+tests cover these software boundaries. Physical USB interoperability, sustained
+hardware decode, OEM tether-interface compatibility, and glass-to-glass latency
+remain explicit device-test gates.
 
 ### iOS/iPadOS
 

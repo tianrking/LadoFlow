@@ -46,13 +46,13 @@ The long-term product promise is simple: install the host, open LadoFlow on a ta
 | --- | --- | --- |
 | Shared wire protocol | M1 payloads and bounded framing implemented | Versioned control, media, input, and telemetry messages |
 | Shared runtime | Negotiation, sessions, reconnect policy, telemetry, pacing, and bounded loopback implemented | Platform-neutral runtime used by every host and display |
-| Desktop host | Runnable Tauri 2 loopback and diagnostics UI | One shell with target-gated native services |
+| Desktop host | Tauri 2 host with diagnostics, tray lifecycle, single-instance activation, loopback, and target-gated native adapters | One shell with target-gated native services |
 | macOS host | Permission/display discovery plus a real ScreenCaptureKit IOSurface probe and local app bundle | Long-running capture/VideoToolbox pipeline, native virtual-display adapter, and notarized host |
 | Windows host | Physical-hardware-verified capture/GPU H.264/input plus a build-verified one-monitor IddCx driver, LocalSystem lifecycle service, bounded IPC client, automatic Tauri virtual-monitor selection, and guarded negotiated-mode alignment | Trusted driver installation, clean-machine recovery tests, and production signing |
 | Linux host | Architecture only | Wayland/X11/DRM-compatible host paths |
-| Android display | Architecture only | Native Kotlin receiver with hardware decode and touch |
+| Android display | Native Kotlin/Compose receiver with LDFL v1, AOA and authenticated USB-tether links, MediaCodec Surface decode, lifecycle recovery, telemetry, and pointer/touch/keyboard return; JVM and Android 14 emulator suites pass, while physical cable proof remains unfinished | Signed release validated across supported phones and tablets |
 | iOS/iPadOS display | Architecture only | Native Swift receiver with hardware decode and touch |
-| USB transport | Tested AOA 1/2 negotiation, cancellable Windows bulk I/O, ordered control/media, live H.264 packets, capability-gated Windows input injection, and bounded host-side reconnect with fresh negotiation; physical-device proof remains unfinished | Direct, authenticated device link |
+| USB transport | Direct AOA and foreground-only USB-tether fallback implemented on Windows and Android, including bounded I/O, mutual pairing authentication, ordered LDFL control/media, live H.264, input return, and fresh-generation recovery; physical-device proof remains unfinished | Direct, authenticated device link |
 | Wi-Fi/LAN transport | Planned after USB | Explicitly paired local connection |
 
 No row above is a release claim. Follow the [roadmap](./docs/roadmap.md) and [GitHub milestones](https://github.com/tianrking/LadoFlow/milestones) for evidence-backed progress.
@@ -100,6 +100,31 @@ LadoFlow/
 ├─ docs/                 # Architecture, protocol, roadmap, and development notes
 └─ .github/workflows/    # Reproducible validation
 ```
+
+## Download or clone only what you need
+
+LadoFlow deliberately keeps interoperating platforms in one monorepo, but a
+developer does not have to materialize every platform. A partial sparse clone
+can select only Android:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/tianrking/LadoFlow.git
+cd LadoFlow
+git sparse-checkout set apps/android docs
+```
+
+Or select the desktop host, shared Rust crates, and Windows native components:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/tianrking/LadoFlow.git
+cd LadoFlow
+git sparse-checkout set apps/desktop crates platform/windows docs
+```
+
+Use `git sparse-checkout disable` to restore the complete tree. A normal clone
+contains source and history, not SDKs, dependency caches, APKs, installers, or
+other ignored build output. End users should use signed GitHub Release packages
+when they become available. See the complete [source checkout guide](./docs/source-checkout.md).
 
 ## Development principles
 

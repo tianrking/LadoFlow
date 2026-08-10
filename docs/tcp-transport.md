@@ -24,7 +24,7 @@ Windows-to-Android connection.
 
 ## Connection ownership
 
-The Android display will listen; the desktop host will connect. That direction
+The Android display listens; the desktop host connects. That direction
 fits USB tethering because Android is normally the tether gateway and avoids
 opening a Windows listener or adding an inbound firewall rule. Discovery must
 only consider an explicitly selected address or a route proven to belong to a
@@ -65,11 +65,12 @@ the most-significant bit of byte 0 through the least-significant bit of byte 9,
 with no padding because 80 is divisible by five. It is secret material: neither
 side logs, persists, nor sends it over the socket.
 
-The Android owner of the listening session must enforce product policy around
-this primitive: expire the token and close the listener after two minutes, stop
-after three failed handshakes, accept only one authenticated host, and
-invalidate the token as soon as that host succeeds or the user stops the
-session.
+The Android owner enforces product policy around this primitive: it binds only
+to an allow-listed active USB-tether interface while the application is in the
+foreground, expires the token and closes the listener after two minutes, stops
+after three failed handshakes, accepts only one authenticated host, and
+invalidates the token as soon as that host succeeds, the application enters the
+background, or the user stops the session.
 
 ## Pairing preface v1
 
@@ -173,7 +174,6 @@ claim of physical Windows-to-Android cable interoperability.
 
 ## Remaining product work
 
-- implement the Android listener as a foreground, user-visible display action;
 - add a session-bound resumption policy before automatic tether reconnect;
 - prove Windows-to-Android LDFL negotiation over a physical tether cable;
 - record sustained bitrate, frame pacing, latency, cable removal, and recovery;
