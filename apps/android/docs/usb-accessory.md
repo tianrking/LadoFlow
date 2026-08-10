@@ -1,9 +1,14 @@
 # Android Open Accessory handoff
 
-The production USB direction is fixed: the Windows, macOS, or Linux computer
+The direct AOA USB direction is fixed: the Windows, macOS, or Linux computer
 is the USB host; Android remains the USB device and exposes the app through
 Android Open Accessory 2.0. ADB, developer options, and Android USB-host mode
 are not part of the product connection path.
+
+Some stock Windows MTP/composite-driver paths cannot safely issue the initial
+AOA control requests without a driver change. The separate
+[USB tethering TCP fallback](./usb-tether.md) covers that no-driver case. It
+does not change the AOA byte stream or LDFL v1.
 
 ## Accessory identity required from the PC host
 

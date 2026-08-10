@@ -108,12 +108,12 @@ class UsbIoSession(
                     if (decoder.bufferedBytes > 0) {
                         terminate(
                             UsbIoFailureKind.Protocol,
-                            "USB accessory ended with ${decoder.bufferedBytes} trailing LDFL bytes",
+                            "Transport ended with ${decoder.bufferedBytes} trailing LDFL bytes",
                         )
                     } else {
                         terminate(
                             UsbIoFailureKind.EndOfStream,
-                            "USB accessory reached end of stream",
+                            "Transport reached end of stream",
                         )
                     }
                     return
@@ -130,7 +130,7 @@ class UsbIoSession(
         } catch (protocol: LdflProtocolException) {
             terminate(UsbIoFailureKind.Protocol, protocol.message ?: "Invalid LDFL stream")
         } catch (exception: Exception) {
-            terminate(UsbIoFailureKind.Io, exception.message ?: "USB read failed")
+            terminate(UsbIoFailureKind.Io, exception.message ?: "Transport read failed")
         }
     }
 
@@ -143,7 +143,7 @@ class UsbIoSession(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (exception: Exception) {
-            terminate(UsbIoFailureKind.Io, exception.message ?: "USB write failed")
+            terminate(UsbIoFailureKind.Io, exception.message ?: "Transport write failed")
         }
     }
 

@@ -60,6 +60,14 @@ sealed interface AndroidDisplaySessionState {
 
     data object WaitingForAccessory : AndroidDisplaySessionState
 
+    data class WaitingForTetherHost(
+        val address: String,
+        val port: Int,
+        val failedHandshakes: Int,
+    ) : AndroidDisplaySessionState
+
+    data class AuthenticatingTether(val hostAddress: String) : AndroidDisplaySessionState
+
     data class WaitingForPermission(val accessoryName: String) : AndroidDisplaySessionState
 
     data class Handshaking(val accessoryName: String) : AndroidDisplaySessionState
@@ -205,6 +213,26 @@ class AndroidDisplaySession(
             }
 
             is UsbTransportState.Connected -> beginHandshake(transportState.accessory.displayName)
+
+            is UsbTransportState.TetherListening -> {
+                resetProtocol("Waiting for an authenticated USB tether host")
+                mutableState.value = AndroidDisplaySessionState.WaitingForTetherHost(
+                    address = transportState.address,
+                    port = transportState.port,
+                    failedHandshakes = transportState.failedHandshakes,
+                )
+            }
+
+            is UsbTransportState.TetherAuthenticating -> {
+                resetProtocol("Authenticating USB tether host")
+                mutableState.value = AndroidDisplaySessionState.AuthenticatingTether(
+                    transportState.hostAddress,
+                )
+            }
+
+            is UsbTransportState.TetherConnected -> beginHandshake(
+                "USB tether host ${transportState.hostAddress}",
+            )
 
             is UsbTransportState.Detached -> {
                 resetProtocol("USB accessory detached")

@@ -4,6 +4,7 @@ enum class ConnectionStage {
     Disconnected,
     DeviceDisconnected,
     WaitingForAccessory,
+    WaitingForTetherHost,
     WaitingForPermission,
     Pairing,
     Connected,
@@ -56,11 +57,25 @@ data class DisplayUiState(
 sealed interface DisplayEvent {
     data object RetryRequested : DisplayEvent
 
+    data object StartUsbTetherRequested : DisplayEvent
+
+    data object StopUsbTetherRequested : DisplayEvent
+
+    data object UseUsbAccessoryRequested : DisplayEvent
+
     data class AccessoryAttached(val name: String?) : DisplayEvent
 
     data object PermissionRequested : DisplayEvent
 
     data object PermissionGranted : DisplayEvent
+
+    data class TetherListenerReady(
+        val address: String,
+        val port: Int,
+        val failedHandshakes: Int,
+    ) : DisplayEvent
+
+    data class TetherHostAuthenticating(val hostAddress: String) : DisplayEvent
 
     data class PermissionDenied(val reason: String) : DisplayEvent
 
@@ -109,6 +124,11 @@ sealed interface DisplayEvent {
 
 object DisplayStateMachine {
     fun reduce(state: DisplayUiState, event: DisplayEvent): DisplayUiState = when (event) {
+        DisplayEvent.StartUsbTetherRequested,
+        DisplayEvent.StopUsbTetherRequested,
+        DisplayEvent.UseUsbAccessoryRequested,
+        -> state
+
         DisplayEvent.RetryRequested -> state.copy(
             stage = ConnectionStage.WaitingForAccessory,
             detail = "Waiting for a USB accessory connection.",
@@ -137,6 +157,28 @@ object DisplayStateMachine {
         DisplayEvent.PermissionGranted -> state.copy(
             stage = ConnectionStage.Pairing,
             detail = "Verifying the local host and negotiating display capabilities.",
+            lastError = null,
+        )
+
+        is DisplayEvent.TetherListenerReady -> state.copy(
+            stage = ConnectionStage.WaitingForTetherHost,
+            hostName = null,
+            stream = null,
+            detail = if (event.failedHandshakes == 0) {
+                "USB tether listener ready at ${event.address}:${event.port}. Enter the code on the host."
+            } else {
+                "Pairing rejected ${event.failedHandshakes} time(s). The listener is still waiting."
+            },
+            recoveryAttempt = 0,
+            lastError = null,
+        )
+
+        is DisplayEvent.TetherHostAuthenticating -> state.copy(
+            stage = ConnectionStage.Pairing,
+            hostName = null,
+            stream = null,
+            detail = "Authenticating USB tether host ${event.hostAddress} before LDFL starts.",
+            recoveryAttempt = 0,
             lastError = null,
         )
 

@@ -55,6 +55,16 @@ sealed interface UsbTransportState {
 
     data class Connected(val accessory: UsbAccessoryIdentity) : UsbTransportState
 
+    data class TetherListening(
+        val address: String,
+        val port: Int,
+        val failedHandshakes: Int,
+    ) : UsbTransportState
+
+    data class TetherAuthenticating(val hostAddress: String) : UsbTransportState
+
+    data class TetherConnected(val hostAddress: String) : UsbTransportState
+
     /** The active accessory physically left the Android USB accessory list. */
     data class Detached(val accessory: UsbAccessoryIdentity) : UsbTransportState
 

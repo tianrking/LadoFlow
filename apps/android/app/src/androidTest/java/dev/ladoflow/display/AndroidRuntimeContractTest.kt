@@ -15,6 +15,9 @@ import dev.ladoflow.display.protocol.DisplayConfigPayload
 import dev.ladoflow.display.protocol.FeatureFlags
 import dev.ladoflow.display.protocol.InputCapabilities
 import dev.ladoflow.display.protocol.VideoCodec
+import dev.ladoflow.display.transport.tether.AndroidUsbTetherTransport
+import dev.ladoflow.display.transport.tether.UsbTetherPairingState
+import dev.ladoflow.display.transport.usb.UsbTransportState
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -29,6 +32,38 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AndroidRuntimeContractTest {
+    @Test
+    fun tetherListenerRefusesToStartOutsideAnObservedForegroundLifecycle() {
+        val transport = AndroidUsbTetherTransport(port = 49_232)
+        try {
+            transport.start()
+            transport.startPairing()
+
+            assertTrue(transport.pairingState.value is UsbTetherPairingState.Unavailable)
+            assertSame(UsbTransportState.Stopped, transport.state.value)
+        } finally {
+            transport.close()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun manifestDeclaresOnlyNormalInternetAccessForTheTetherListener() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val packageInfo = context.packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.GET_PERMISSIONS,
+        )
+
+        assertTrue(
+            packageInfo.requestedPermissions.orEmpty().contains(android.Manifest.permission.INTERNET),
+        )
+        assertEquals(
+            PackageManager.PERMISSION_GRANTED,
+            context.checkSelfPermission(android.Manifest.permission.INTERNET),
+        )
+    }
+
     @Suppress("DEPRECATION")
     @Test
     fun mainActivityPublishesTheAccessoryAttachMetadata() {

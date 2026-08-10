@@ -152,4 +152,22 @@ class DisplayStateMachineTest {
         assertEquals(ConnectionStage.ProtocolError, protocolError.stage)
         assertEquals("Duplicate host sequence 1", protocolError.lastError)
     }
+
+    @Test
+    fun `USB tether listener and authentication are explicit states`() {
+        val listening = DisplayStateMachine.reduce(
+            DisplayUiState(),
+            DisplayEvent.TetherListenerReady("192.168.42.129", 49_231, 2),
+        )
+
+        assertEquals(ConnectionStage.WaitingForTetherHost, listening.stage)
+        assertEquals(true, listening.detail.contains("2 time(s)"))
+
+        val authenticating = DisplayStateMachine.reduce(
+            listening,
+            DisplayEvent.TetherHostAuthenticating("192.168.42.1"),
+        )
+        assertEquals(ConnectionStage.Pairing, authenticating.stage)
+        assertEquals(true, authenticating.detail.contains("before LDFL starts"))
+    }
 }

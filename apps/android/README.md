@@ -1,8 +1,9 @@
 # LadoFlow Android display
 
-Native Kotlin and Jetpack Compose display endpoint for LadoFlow. The production
-connection is Android Open Accessory 2.0 over a normal USB data cable: the PC is
-USB host and Android exposes the app as the accessory/device. ADB, developer
+Native Kotlin and Jetpack Compose display endpoint for LadoFlow. It retains the
+direct Android Open Accessory 2.0 path and now includes an explicit USB-tether
+TCP fallback for Windows hosts that cannot safely claim the pre-AOA MTP device.
+Both are normal-cable, no-ADB paths and both carry unchanged LDFL v1. Developer
 options, accounts, and a cloud relay are not part of the display path.
 
 ## Implemented boundary
@@ -14,6 +15,13 @@ options, accounts, and a cloud relay are not part of the display path.
 - AOA attach filter, temporary permission, duplex `ParcelFileDescriptor`, 64 KiB
   incremental reads, finite queues, descriptor-close cancellation, detach, and
   bounded in-process reconnect with a fresh LDFL generation.
+- Foreground-only USB-tether TCP listener bound to an allow-listed tether
+  interface address, with a memory-only 80-bit Crockford code, exact fixed-size
+  HMAC pairing, two-minute/three-failure/single-host limits, bounded socket
+  reads during pairing, explicit-close cancellation after authentication, and
+  direct handoff of the untouched stream to the same LDFL session.
+  Pairing authenticates the tethered host but does not encrypt LDFL and is not
+  advertised as LAN transport.
 - One global sender sequence across every message family. Outbound priority is
   decided before numbering; numbered frames enter one FIFO writer. Inbound
   control/media wire order is retained and duplicate/stale sequence values fail
@@ -40,6 +48,7 @@ Protocol and platform details:
 
 - [display-side session](./docs/session-control.md)
 - [USB accessory handoff](./docs/usb-accessory.md)
+- [USB tethering fallback](./docs/usb-tether.md)
 - [MediaCodec boundary](./docs/media-codec.md)
 - [release build boundary](./docs/release-build.md)
 - [input and rotation](./docs/input-and-rotation.md)

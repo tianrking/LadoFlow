@@ -85,12 +85,15 @@ import dev.ladoflow.display.session.AndroidDisplaySession
 import dev.ladoflow.display.session.AndroidDisplaySessionMetrics
 import dev.ladoflow.display.session.AndroidDisplaySessionState
 import dev.ladoflow.display.session.DisplaySessionFailureKind
+import dev.ladoflow.display.transport.AndroidWiredDisplayTransport
+import dev.ladoflow.display.transport.WiredTransportMode
+import dev.ladoflow.display.transport.tether.UsbTetherPairingState
 import dev.ladoflow.display.ui.theme.LadoCoral
 import dev.ladoflow.display.ui.theme.LadoCyan
 import dev.ladoflow.display.ui.theme.LadoFlowTheme
 import dev.ladoflow.display.ui.theme.LadoMuted
 import dev.ladoflow.display.ui.theme.LadoSurfaceRaised
-import dev.ladoflow.display.transport.usb.AndroidUsbAccessoryTransport
+import kotlinx.coroutines.flow.MutableStateFlow
 
 private enum class Destination(
     val label: String,
@@ -105,13 +108,22 @@ private enum class Destination(
 fun LadoFlowApp(
     displayViewModel: DisplayViewModel = viewModel(),
     displaySession: AndroidDisplaySession? = null,
-    usbTransport: AndroidUsbAccessoryTransport? = null,
+    wiredTransport: AndroidWiredDisplayTransport? = null,
     startupFailure: String? = null,
     capabilityEvidence: AndroidDisplayCapabilityEvidence? = null,
 ) {
     val state by displayViewModel.state.collectAsStateWithLifecycle()
     val view = LocalView.current
     val session = displaySession
+    val modeFlow = remember(wiredTransport) {
+        wiredTransport?.mode ?: MutableStateFlow(WiredTransportMode.Accessory)
+    }
+    val pairingStateFlow = remember(wiredTransport) {
+        wiredTransport?.tetherPairingState
+            ?: MutableStateFlow<UsbTetherPairingState>(UsbTetherPairingState.Inactive)
+    }
+    val transportMode by modeFlow.collectAsStateWithLifecycle()
+    val tetherPairingState by pairingStateFlow.collectAsStateWithLifecycle()
 
     if (session != null) {
         val sessionState by session.state.collectAsStateWithLifecycle()
@@ -139,13 +151,25 @@ fun LadoFlowApp(
         surfaceController = session?.surfaceController,
         inputController = session?.inputController,
         capabilityEvidence = capabilityEvidence,
+        transportMode = transportMode,
+        tetherPairingState = tetherPairingState,
         onEvent = { event ->
-            if (event == DisplayEvent.RetryRequested && startupFailure != null) {
+            if (
+                startupFailure != null &&
+                (event == DisplayEvent.RetryRequested ||
+                    event == DisplayEvent.StartUsbTetherRequested)
+            ) {
                 displayViewModel.accept(DisplayEvent.Failed(startupFailure))
             } else {
                 when (event) {
-                    DisplayEvent.RetryRequested -> session?.retry() ?: usbTransport?.retry()
-                    DisplayEvent.Disconnected -> session?.disconnect() ?: usbTransport?.disconnect()
+                    DisplayEvent.RetryRequested -> session?.retry() ?: wiredTransport?.retry()
+                    DisplayEvent.Disconnected ->
+                        session?.disconnect() ?: wiredTransport?.disconnect()
+                    DisplayEvent.StartUsbTetherRequested ->
+                        wiredTransport?.startUsbTetherPairing()
+                    DisplayEvent.StopUsbTetherRequested ->
+                        wiredTransport?.stopUsbTetherPairing()
+                    DisplayEvent.UseUsbAccessoryRequested -> wiredTransport?.useUsbAccessory()
                     else -> Unit
                 }
                 displayViewModel.accept(event)
@@ -157,6 +181,13 @@ fun LadoFlowApp(
 private fun AndroidDisplaySessionState.toDisplayEvent(): DisplayEvent = when (this) {
     AndroidDisplaySessionState.Stopped -> DisplayEvent.TransportStopped
     AndroidDisplaySessionState.WaitingForAccessory -> DisplayEvent.RetryRequested
+    is AndroidDisplaySessionState.WaitingForTetherHost -> DisplayEvent.TetherListenerReady(
+        address,
+        port,
+        failedHandshakes,
+    )
+    is AndroidDisplaySessionState.AuthenticatingTether ->
+        DisplayEvent.TetherHostAuthenticating(hostAddress)
     is AndroidDisplaySessionState.WaitingForPermission -> DisplayEvent.AccessoryAttached(accessoryName)
     is AndroidDisplaySessionState.Handshaking -> DisplayEvent.UsbLinkConnected(accessoryName)
     is AndroidDisplaySessionState.Ready -> DisplayEvent.PairingCompleted(hostName)
@@ -203,6 +234,8 @@ internal fun LadoFlowApp(
     surfaceController: DecoderSurfaceController? = null,
     inputController: AndroidInputController? = null,
     capabilityEvidence: AndroidDisplayCapabilityEvidence? = null,
+    transportMode: WiredTransportMode = WiredTransportMode.Accessory,
+    tetherPairingState: UsbTetherPairingState = UsbTetherPairingState.Inactive,
     onEvent: (DisplayEvent) -> Unit,
 ) {
     var selectedName by rememberSaveable { mutableStateOf(Destination.Display.name) }
@@ -242,10 +275,17 @@ internal fun LadoFlowApp(
                                 state,
                                 surfaceController,
                                 inputController,
+                                transportMode,
+                                tetherPairingState,
                                 onEvent,
                             )
                             Destination.Settings -> SettingsScreen(state, onEvent)
-                            Destination.Diagnostics -> DiagnosticsScreen(state, capabilityEvidence)
+                            Destination.Diagnostics -> DiagnosticsScreen(
+                                state,
+                                capabilityEvidence,
+                                transportMode,
+                                tetherPairingState,
+                            )
                         }
                     }
                 }
@@ -373,6 +413,8 @@ private fun DisplayScreen(
     state: DisplayUiState,
     surfaceController: DecoderSurfaceController?,
     inputController: AndroidInputController?,
+    transportMode: WiredTransportMode,
+    tetherPairingState: UsbTetherPairingState,
     onEvent: (DisplayEvent) -> Unit,
 ) {
     Box(
@@ -390,9 +432,12 @@ private fun DisplayScreen(
                 DisplaySurfaceCard(state, surfaceController, inputController)
                 ActiveSessionControls(state, onEvent)
             } else {
-                ConnectionHero(state, onEvent)
+                ConnectionHero(state, transportMode, onEvent)
             }
-            ConnectionJourney(state.stage)
+            if (transportMode == WiredTransportMode.UsbTether) {
+                UsbTetherPairingCard(tetherPairingState, onEvent)
+            }
+            ConnectionJourney(state.stage, transportMode)
             PrivacyCard()
         }
     }
@@ -437,6 +482,7 @@ private fun ActiveSessionControls(
 @Composable
 private fun ConnectionHero(
     state: DisplayUiState,
+    transportMode: WiredTransportMode,
     onEvent: (DisplayEvent) -> Unit,
 ) {
     Card(
@@ -490,7 +536,13 @@ private fun ConnectionHero(
                     Button(onClick = { onEvent(DisplayEvent.RetryRequested) }) {
                         Icon(Icons.Outlined.Usb, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Check USB connection")
+                        Text(
+                            if (transportMode == WiredTransportMode.UsbTether) {
+                                "Create a new pairing code"
+                            } else {
+                                "Check USB connection"
+                            },
+                        )
                     }
                 }
 
@@ -503,8 +555,162 @@ private fun ConnectionHero(
 
                 else -> Unit
             }
+
+            if (
+                transportMode == WiredTransportMode.Accessory &&
+                state.stage != ConnectionStage.Connected
+            ) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = { onEvent(DisplayEvent.StartUsbTetherRequested) }) {
+                    Text("Use USB tethering fallback")
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun UsbTetherPairingCard(
+    pairingState: UsbTetherPairingState,
+    onEvent: (DisplayEvent) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(22.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(20.dp)) {
+            Text(
+                "USB tethering wired fallback",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "1. Keep the data cable connected.  2. Turn on USB tethering in Android " +
+                    "system settings.  3. Create a code here and enter it on LadoFlow Host.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(16.dp))
+
+            when (pairingState) {
+                UsbTetherPairingState.Inactive -> Text(
+                    "The listener is stopped. A code is created only after your explicit action.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                UsbTetherPairingState.Starting -> Text("Finding the active USB tether interface…")
+
+                is UsbTetherPairingState.Unavailable -> PairingFailure(pairingState.reason)
+
+                is UsbTetherPairingState.Listening -> {
+                    Text("Pairing code", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        pairingState.code.revealForDisplay(),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    DiagnosticRow("Listener", "${pairingState.address}:${pairingState.port}")
+                    DiagnosticRow(
+                        "Expires",
+                        "${pairingState.expiresAfterSeconds / 60} minutes after creation",
+                    )
+                    DiagnosticRow(
+                        "Failed handshakes",
+                        "${pairingState.failedHandshakes}/${pairingState.maximumFailedHandshakes}",
+                    )
+                    pairingState.lastFailure?.let { reason -> PairingFailure(reason) }
+                }
+
+                is UsbTetherPairingState.Authenticating -> {
+                    Text(
+                        pairingState.code.revealForDisplay(),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("Authenticating ${pairingState.hostAddress}…")
+                    Text(
+                        "No LDFL bytes are accepted until the four-record handshake completes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                is UsbTetherPairingState.Authenticated -> {
+                    Text("One USB-tether host authenticated", fontWeight = FontWeight.SemiBold)
+                    DiagnosticRow("Host", pairingState.hostAddress)
+                    DiagnosticRow("Local endpoint", "${pairingState.address}:${pairingState.port}")
+                    Text(
+                        "The one-time code has already been invalidated.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                is UsbTetherPairingState.Expired -> PairingFailure(
+                    "The two-minute pairing window expired and the listener closed.",
+                )
+
+                is UsbTetherPairingState.LockedOut -> PairingFailure(
+                    "Three failed handshakes closed the listener and invalidated the code.",
+                )
+
+                is UsbTetherPairingState.Failed -> PairingFailure(pairingState.reason)
+            }
+
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "This step authenticates one host reachable on the explicit USB-tether " +
+                    "interface. It does not encrypt the LDFL stream and is not a LAN mode.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                when (pairingState) {
+                    UsbTetherPairingState.Starting,
+                    is UsbTetherPairingState.Listening,
+                    is UsbTetherPairingState.Authenticating,
+                    is UsbTetherPairingState.Authenticated,
+                    -> OutlinedButton(
+                        onClick = { onEvent(DisplayEvent.StopUsbTetherRequested) },
+                    ) {
+                        Text("Stop wired fallback")
+                    }
+
+                    UsbTetherPairingState.Inactive,
+                    is UsbTetherPairingState.Unavailable,
+                    is UsbTetherPairingState.Expired,
+                    is UsbTetherPairingState.LockedOut,
+                    is UsbTetherPairingState.Failed,
+                    -> Button(onClick = { onEvent(DisplayEvent.StartUsbTetherRequested) }) {
+                        Text("Create pairing code")
+                    }
+                }
+                OutlinedButton(onClick = { onEvent(DisplayEvent.UseUsbAccessoryRequested) }) {
+                    Text("Use USB Accessory")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairingFailure(reason: String) {
+    Text(
+        reason,
+        color = MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodyMedium,
+    )
 }
 
 @Composable
@@ -534,6 +740,7 @@ private fun StageOrb(stage: ConnectionStage) {
         Icon(
             imageVector = when (stage) {
                 ConnectionStage.WaitingForAccessory,
+                ConnectionStage.WaitingForTetherHost,
                 ConnectionStage.WaitingForPermission,
                 -> Icons.Outlined.Cable
 
@@ -627,7 +834,10 @@ private fun DisplaySurfaceCard(
 }
 
 @Composable
-private fun ConnectionJourney(stage: ConnectionStage) {
+private fun ConnectionJourney(
+    stage: ConnectionStage,
+    transportMode: WiredTransportMode,
+) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RoundedCornerShape(22.dp),
@@ -635,7 +845,11 @@ private fun ConnectionJourney(stage: ConnectionStage) {
     ) {
         Column(Modifier.padding(20.dp)) {
             Text(
-                text = "USB-first connection",
+                text = if (transportMode == WiredTransportMode.UsbTether) {
+                    "USB tethering fallback"
+                } else {
+                    "USB-first connection"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -646,18 +860,34 @@ private fun ConnectionJourney(stage: ConnectionStage) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(18.dp))
-            JourneyStep(
-                index = 1,
-                title = "Connect the cable",
-                detail = "Use a data-capable USB cable between this device and the host.",
-                complete = stage.hasAccessoryConnection(),
-            )
-            JourneyStep(
-                index = 2,
-                title = "Approve LadoFlow",
-                detail = "Android asks before opening the USB accessory.",
-                complete = stage.hasUsbAuthorization(),
-            )
+            if (transportMode == WiredTransportMode.UsbTether) {
+                JourneyStep(
+                    index = 1,
+                    title = "Enable USB tethering",
+                    detail = "Use Android system settings while the data cable is connected.",
+                    complete = stage == ConnectionStage.WaitingForTetherHost ||
+                        stage.hasUsbAuthorization(),
+                )
+                JourneyStep(
+                    index = 2,
+                    title = "Authenticate one host",
+                    detail = "Enter the 16-character one-time code on LadoFlow Host.",
+                    complete = stage.hasUsbAuthorization(),
+                )
+            } else {
+                JourneyStep(
+                    index = 1,
+                    title = "Connect the cable",
+                    detail = "Use a data-capable USB cable between this device and the host.",
+                    complete = stage.hasAccessoryConnection(),
+                )
+                JourneyStep(
+                    index = 2,
+                    title = "Approve LadoFlow",
+                    detail = "Android asks before opening the USB accessory.",
+                    complete = stage.hasUsbAuthorization(),
+                )
+            }
             JourneyStep(
                 index = 3,
                 title = "Start the extended display",
@@ -807,6 +1037,8 @@ private fun SettingsScreen(
 private fun DiagnosticsScreen(
     state: DisplayUiState,
     capabilityEvidence: AndroidDisplayCapabilityEvidence?,
+    transportMode: WiredTransportMode,
+    tetherPairingState: UsbTetherPairingState,
 ) {
     ScreenColumn(
         title = "Diagnostics",
@@ -816,14 +1048,24 @@ private fun DiagnosticsScreen(
             DiagnosticRow("State", stageLabel(state.stage))
             DiagnosticRow(
                 "Transport",
-                when (state.stage) {
-                    ConnectionStage.Pairing,
-                    ConnectionStage.Connected,
-                    ConnectionStage.Displaying,
-                    -> "USB Accessory · link open"
+                when (transportMode) {
+                    WiredTransportMode.Accessory -> when (state.stage) {
+                        ConnectionStage.Pairing,
+                        ConnectionStage.Connected,
+                        ConnectionStage.Displaying,
+                        -> "USB Accessory · link open"
 
-                    ConnectionStage.Recovering -> "USB Accessory · recovering"
-                    else -> "USB Accessory · not connected"
+                        ConnectionStage.Recovering -> "USB Accessory · recovering"
+                        else -> "USB Accessory · not connected"
+                    }
+
+                    WiredTransportMode.UsbTether -> when (tetherPairingState) {
+                        is UsbTetherPairingState.Authenticated -> "USB tether TCP · authenticated"
+                        is UsbTetherPairingState.Listening -> "USB tether TCP · pairing listener"
+                        is UsbTetherPairingState.Authenticating ->
+                            "USB tether TCP · authenticating"
+                        else -> "USB tether TCP · not connected"
+                    }
                 },
             )
             DiagnosticRow("Host", state.hostName ?: "Not connected")
@@ -847,9 +1089,10 @@ private fun DiagnosticsScreen(
         SettingsCard(title = "Build boundary") {
             Text(
                 "This build includes the Compose UI, bounded LDFL v1 codec, and Android USB Accessory " +
-                    "lifecycle/I/O boundary. The H.264 MediaCodec boundary validates Annex-B and waits " +
-                    "for SPS/PPS plus an LDFL keyframe. 未实机验证: USB and MediaCodec output have " +
-                    "not been verified on a physical Android device.",
+                    "lifecycle/I/O boundary plus an authenticated USB-tether TCP fallback. The H.264 " +
+                    "MediaCodec boundary validates Annex-B and waits for SPS/PPS plus an LDFL " +
+                    "keyframe. USB-tether pairing authenticates but does not encrypt LDFL. 未实机验证: " +
+                    "USB and MediaCodec output have not been verified on a physical Android device.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -966,6 +1209,7 @@ private fun stageLabel(stage: ConnectionStage): String = when (stage) {
     ConnectionStage.Disconnected -> "Disconnected"
     ConnectionStage.DeviceDisconnected -> "Device disconnected"
     ConnectionStage.WaitingForAccessory -> "USB ready"
+    ConnectionStage.WaitingForTetherHost -> "Waiting for tether host"
     ConnectionStage.WaitingForPermission -> "Waiting for authorization"
     ConnectionStage.Pairing -> "Pairing"
     ConnectionStage.Connected -> "Connected"
@@ -979,6 +1223,7 @@ private fun stageHeadline(stage: ConnectionStage): String = when (stage) {
     ConnectionStage.Disconnected -> "Host disconnected"
     ConnectionStage.DeviceDisconnected -> "Device disconnected"
     ConnectionStage.WaitingForAccessory -> "Connect your computer"
+    ConnectionStage.WaitingForTetherHost -> "Enter this code on your host"
     ConnectionStage.WaitingForPermission -> "Waiting for authorization"
     ConnectionStage.Pairing -> "Pairing with your host"
     ConnectionStage.Connected -> "Connected"
@@ -1007,10 +1252,12 @@ private fun stageColor(stage: ConnectionStage): Color = when (stage) {
     -> Color(0xFF8FA3B2)
 
     ConnectionStage.WaitingForAccessory -> Color(0xFF78A9FF)
+    ConnectionStage.WaitingForTetherHost -> Color(0xFF78A9FF)
 }
 
 private fun ConnectionStage.hasAccessoryConnection(): Boolean = when (this) {
     ConnectionStage.WaitingForPermission,
+    ConnectionStage.WaitingForTetherHost,
     ConnectionStage.Pairing,
     ConnectionStage.Connected,
     ConnectionStage.Displaying,
@@ -1036,6 +1283,7 @@ private fun ConnectionStage.hasUsbAuthorization(): Boolean = when (this) {
     ConnectionStage.Disconnected,
     ConnectionStage.DeviceDisconnected,
     ConnectionStage.WaitingForAccessory,
+    ConnectionStage.WaitingForTetherHost,
     ConnectionStage.WaitingForPermission,
     ConnectionStage.Error,
     -> false

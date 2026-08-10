@@ -153,6 +153,40 @@ class AndroidDisplaySessionTest {
     }
 
     @Test
+    fun usbTetherAuthenticationStartsOneFreshRawLdflGeneration() = runTest {
+        val harness = Harness(backgroundScope)
+
+        harness.transport.mutableState.value = UsbTransportState.TetherListening(
+            address = "192.168.42.129",
+            port = 49_231,
+            failedHandshakes = 1,
+        )
+        eventually {
+            harness.session.state.value is AndroidDisplaySessionState.WaitingForTetherHost
+        }
+        val waiting = harness.session.state.value as AndroidDisplaySessionState.WaitingForTetherHost
+        assertEquals("192.168.42.129", waiting.address)
+        assertEquals(49_231, waiting.port)
+        assertEquals(1, waiting.failedHandshakes)
+
+        harness.transport.mutableState.value = UsbTransportState.TetherAuthenticating("192.168.42.1")
+        eventually {
+            harness.session.state.value is AndroidDisplaySessionState.AuthenticatingTether
+        }
+        harness.transport.mutableState.value = UsbTransportState.TetherConnected("192.168.42.1")
+
+        val hello = harness.transport.nextSent()
+        val capabilities = harness.transport.nextSent()
+        assertEquals(listOf(0uL, 1uL), listOf(hello.sequence, capabilities.sequence))
+        assertTrue(hello.decodePayload() is HelloPayload)
+        assertTrue(capabilities.decodePayload() is CapabilitiesPayload)
+
+        harness.transport.framesMutable.emit(hostHelloFrame(sequence = 0u))
+        harness.transport.framesMutable.emit(hostCapabilitiesFrame(sequence = 1u))
+        eventually { harness.session.state.value is AndroidDisplaySessionState.Ready }
+    }
+
+    @Test
     fun validHandshakeConfigAndSurfaceGateMediaBeforeDisplaying() = runTest {
         val harness = Harness(backgroundScope)
         harness.connectAndNegotiate()

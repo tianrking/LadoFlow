@@ -15,7 +15,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             LadoFlowApp(
                 displaySession = ladoFlowApplication.displaySession,
-                usbTransport = ladoFlowApplication.usbAccessoryTransport,
+                wiredTransport = ladoFlowApplication.wiredTransport,
                 startupFailure = ladoFlowApplication.startupFailure,
                 capabilityEvidence = ladoFlowApplication.capabilityEvidence,
             )
