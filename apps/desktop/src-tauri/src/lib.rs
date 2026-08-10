@@ -2,6 +2,8 @@ mod commands;
 mod host_protocol;
 mod platform;
 mod runtime;
+#[cfg(desktop)]
+mod shell;
 mod tether;
 
 use std::sync::Arc;
@@ -16,8 +18,23 @@ use runtime::DesktopRuntime;
 /// with a fatal runtime error.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        shell::show_main_window(app);
+    }));
+
+    builder
         .manage(Arc::new(DesktopRuntime::default()))
+        .setup(|app| {
+            #[cfg(desktop)]
+            shell::setup(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            #[cfg(desktop)]
+            shell::handle_window_event(window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_host_snapshot,
             commands::start_loopback,

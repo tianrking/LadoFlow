@@ -10,6 +10,7 @@ path; it is not automatically a release claim.
 - [x] Cross-platform repository layout
 - [x] Original brand mark and multilingual README
 - [x] Baseline CI configuration
+- [x] Cross-platform tray shell, close-to-tray lifecycle, and single-instance activation
 - [ ] Confirm license and trademark strategy before paid distribution
 
 ## M1 — Protocol, shared runtime, and loopback

@@ -5,6 +5,14 @@ layer and a Rust command/runtime layer. Shared protocol, session, transport, and
 media policy stays in workspace crates. OS-specific capture and virtual-display
 code stays behind target-gated adapters.
 
+The packaged desktop process is single-instance. Launching LadoFlow again
+restores and focuses the existing main window instead of creating a second
+process that could contend for capture, transport, or driver ownership. Closing
+the main window hides it to the system tray without interrupting an active
+display session. The tray can reopen the window, disconnect the display, or
+quit explicitly. On Windows, explicit Quit also asks the LadoFlow controller to
+disable its virtual monitor after the transport worker has stopped.
+
 ## Run on macOS or Windows
 
 Install the repository toolchain, then from the repository root:
