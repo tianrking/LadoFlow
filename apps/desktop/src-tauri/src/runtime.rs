@@ -1380,11 +1380,21 @@ mod tests {
             .expect("start loopback");
         assert!(matches!(started.session.phase, SessionPhaseView::Streaming));
 
-        thread::sleep(Duration::from_millis(80));
-        let running = runtime.snapshot();
-        assert!(running.telemetry.frames_presented >= 2);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let running = loop {
+            let snapshot = runtime.snapshot();
+            if snapshot.telemetry.frames_presented >= 2 || Instant::now() >= deadline {
+                break snapshot;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let frames_presented = running.telemetry.frames_presented;
 
         let stopped = runtime.stop().expect("stop loopback");
+        assert!(
+            frames_presented >= 2,
+            "loopback presented only {frames_presented} frames within two seconds"
+        );
         assert!(matches!(stopped.session.phase, SessionPhaseView::Stopped));
     }
 
