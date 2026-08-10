@@ -46,6 +46,10 @@ pub struct TetherDiscoveryReport {
     pub(crate) detail: String,
 }
 
+// The cross-platform Tauri command deliberately keeps one fallible signature:
+// Windows performs fallible SetupAPI/IP Helper work, while other hosts return
+// a successful manual-entry report without touching platform APIs.
+#[cfg_attr(not(target_os = "windows"), allow(clippy::unnecessary_wraps))]
 pub fn discover_tether_endpoints() -> Result<TetherDiscoveryReport, String> {
     #[cfg(target_os = "windows")]
     {
